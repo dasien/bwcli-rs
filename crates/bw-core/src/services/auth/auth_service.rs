@@ -438,9 +438,10 @@ impl AuthService {
     async fn fetch_profile(&self, access_token: &str) -> Result<ProfileResponse, AuthError> {
         // Use get_authenticated which takes the token directly,
         // avoiding the need to store it before the profile fetch
+        // Note: path is relative to api_url (https://api.bitwarden.com), so no /api prefix
         let profile: ProfileResponse = self
             .api_client
-            .get_authenticated("/api/accounts/profile", access_token)
+            .get_authenticated("/accounts/profile", access_token)
             .await
             .map_err(|e| AuthError::Api(e.into()))?;
 
