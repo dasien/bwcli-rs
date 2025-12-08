@@ -1,0 +1,38 @@
+[package]
+name = "bw-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "bw"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace dependencies
+clap.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Internal dependencies
+bw-core = { path = "../bw-core" }
+
+# Security
+secrecy.workspace = true
+
+# Utilities
+base64.workspace = true
+
+# Interactive prompts
+dialoguer.workspace = true
+indicatif.workspace = true
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"

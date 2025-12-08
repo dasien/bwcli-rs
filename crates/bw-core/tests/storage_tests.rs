@@ -1,0 +1,509 @@
+//! Integration tests for the storage layer
+//!
+//! These tests verify:
+//! - Cross-instance data persistence
+//! - Concurrent access handling
+//! - Error scenarios
+//! - Complex data structures
+//! - Platform-specific behavior
+
+use bw_core::services::storage::{JsonFileStorage, Storage};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::sync::{Arc, Barrier};
+use std::thread;
+use tempfile::TempDir;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct TestUser {
+    id: String,
+    email: String,
+    name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct TestConfig {
+    api_url: String,
+    identity_url: String,
+    timeout_seconds: u32,
+}
+
+// ============================================================================
+// Data Persistence Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_data_persists_across_multiple_instances() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().to_path_buf();
+
+    // First instance: write data
+    {
+        let mut storage = JsonFileStorage::new(Some(path.clone())).unwrap();
+        storage.set("user.id", &"user123").await.unwrap();
+        storage
+            .set("user.email", &"test@example.com")
+            .await
+            .unwrap();
+        storage.set("config.timeout", &30u32).await.unwrap();
+    }
+
+    // Second instance: verify data persists
+    {
+        let storage = JsonFileStorage::new(Some(path.clone())).unwrap();
+        let user_id: Option<String> = storage.get("user.id").unwrap();
+        let email: Option<String> = storage.get("user.email").unwrap();
+        let timeout: Option<u32> = storage.get("config.timeout").unwrap();
+
+        assert_eq!(user_id, Some("user123".to_string()));
+        assert_eq!(email, Some("test@example.com".to_string()));
+        assert_eq!(timeout, Some(30));
+    }
+
+    // Third instance: modify and verify again
+    {
+        let mut storage = JsonFileStorage::new(Some(path.clone())).unwrap();
+        storage
+            .set("user.email", &"updated@example.com")
+            .await
+            .unwrap();
+
+        let email: Option<String> = storage.get("user.email").unwrap();
+        assert_eq!(email, Some("updated@example.com".to_string()));
+
+        // Original data should still exist
+        let user_id: Option<String> = storage.get("user.id").unwrap();
+        assert_eq!(user_id, Some("user123".to_string()));
+    }
+}
+
+#[tokio::test]
+async fn test_complex_nested_structures() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut storage = JsonFileStorage::new(Some(temp_dir.path().to_path_buf())).unwrap();
+
+    let user = TestUser {
+        id: "123".to_string(),
+        email: "user@example.com".to_string(),
+        name: Some("Test User".to_string()),
+    };
+
+    let config = TestConfig {
+        api_url: "https://api.bitwarden.com".to_string(),
+        identity_url: "https://identity.bitwarden.com".to_string(),
+        timeout_seconds: 60,
+    };
+
+    // Store complex structures
+    storage.set("userProfile", &user).await.unwrap();
+    storage.set("environmentUrls", &config).await.unwrap();
+
+    // Retrieve and verify
+    let retrieved_user: Option<TestUser> = storage.get("userProfile").unwrap();
+    let retrieved_config: Option<TestConfig> = storage.get("environmentUrls").unwrap();
+
+    assert_eq!(retrieved_user, Some(user));
+    assert_eq!(retrieved_config, Some(config));
+}
+
+#[tokio::test]
+async fn test_deeply_nested_keys() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut storage = JsonFileStorage::new(Some(temp_dir.path().to_path_buf())).unwrap();
+
+    // Test various levels of nesting (avoiding conflicts - don't set both parent and child as values)
+    storage.set("a.b.c.d", &"value4").await.unwrap();
+    storage.set("x.y.z", &"value3").await.unwrap();
+    storage.set("m.n", &"value2").await.unwrap();
+
+    // Verify all levels are accessible
+    let v1: Option<String> = storage.get("a.b.c.d").unwrap();
+    let v2: Option<String> = storage.get("x.y.z").unwrap();
+    let v3: Option<String> = storage.get("m.n").unwrap();
+
+    assert_eq!(v1, Some("value4".to_string()));
+    assert_eq!(v2, Some("value3".to_string()));
+    assert_eq!(v3, Some("value2".to_string()));
+}
+
+// ============================================================================
+// Concurrent Access Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_concurrent_reads_same_instance() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut storage = JsonFileStorage::new(Some(temp_dir.path().to_path_buf())).unwrap();
+
+    // Set up test data
+    storage.set("shared_key", &"shared_value").await.unwrap();
+
+    let storage = Arc::new(storage);
+    let barrier = Arc::new(Barrier::new(5));
+    let mut handles = vec![];
+
+    // Spawn multiple threads reading concurrently
+    for i in 0..5 {
+        let storage_clone = Arc::clone(&storage);
+        let barrier_clone = Arc::clone(&barrier);
+
+        let handle = thread::spawn(move || {
+            barrier_clone.wait(); // Ensure all threads start together
+
+            let value: Option<String> = storage_clone.get("shared_key").unwrap();
+            assert_eq!(value, Some("shared_value".to_string()));
+
+            // Also test has() concurrently
+            assert!(storage_clone.has("shared_key").unwrap());
+
+            i // Return thread ID for verification
+        });
+
+        handles.push(handle);
+    }
+
+    // Wait for all threads to complete
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn test_sequential_writes_across_instances() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().to_path_buf();
+
+    // Simulate multiple processes writing sequentially
+    for i in 0..10 {
+        let mut storage = JsonFileStorage::new(Some(path.clone())).unwrap();
+        storage.set(&format!("key_{}", i), &i).await.unwrap();
+    }
+
+    // Verify all writes succeeded
+    let storage = JsonFileStorage::new(Some(path.clone())).unwrap();
+    for i in 0..10 {
+        let value: Option<i32> = storage.get(&format!("key_{}", i)).unwrap();
+        assert_eq!(value, Some(i));
+    }
+}
+
+// ============================================================================
+// Error Handling Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_empty_file_handling() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().to_path_buf();
+    let file_path = path.join("data.json");
+
+    // Create empty file
+    fs::create_dir_all(&path).unwrap();
+    fs::write(&file_path, "").unwrap();
+
+    // Should handle empty file gracefully
+    let storage = JsonFileStorage::new(Some(path.clone()));
+    assert!(storage.is_ok());
+
+    let storage = storage.unwrap();
+    let value: Option<String> = storage.get("any_key").unwrap();
+    assert_eq!(value, None);
+}
+
+#[tokio::test]
+async fn test_whitespace_only_file_handling() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().to_path_buf();
+    let file_path = path.join("data.json");
+
+    // Create file with only whitespace
+    fs::create_dir_all(&path).unwrap();
+    fs::write(&file_path, "   \n\t  \n  ").unwrap();
+
+    // Should handle whitespace-only file gracefully
+    let storage = JsonFileStorage::new(Some(path.clone()));
+    assert!(storage.is_ok());
+
+    let storage = storage.unwrap();
+    let value: Option<String> = storage.get("any_key").unwrap();
+    assert_eq!(value, None);
+}
+
+#[tokio::test]
+async fn test_corrupted_json_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().to_path_buf();
+    let file_path = path.join("data.json");
+
+    // Create corrupted JSON file
+    fs::create_dir_all(&path).unwrap();
+    fs::write(&file_path, "{invalid json content}").unwrap();
+
+    // Should return error for corrupted file
+    let storage = JsonFileStorage::new(Some(path.clone()));
+    assert!(storage.is_err());
+}
+
+#[tokio::test]
+async fn test_nonexistent_key_operations() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut storage = JsonFileStorage::new(Some(temp_dir.path().to_path_buf())).unwrap();
+
+    // Get nonexistent key should return None
+    let value: Option<String> = storage.get("nonexistent").unwrap();
+    assert_eq!(value, None);
+
+    // Has on nonexistent key should return false
+    assert!(!storage.has("nonexistent").unwrap());
+
+    // Remove nonexistent key should return false
+    let removed = storage.remove("nonexistent").await.unwrap();
+    assert!(!removed);
+}
+
+// ============================================================================
+// Data Type Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_various_data_types() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut storage = JsonFileStorage::new(Some(temp_dir.path().to_path_buf())).unwrap();
+
+    // String
+    storage.set("string_val", &"hello").await.unwrap();
+    let s: Option<String> = storage.get("string_val").unwrap();
+    assert_eq!(s, Some("hello".to_string()));
+
+    // Integer
+    storage.set("int_val", &42i32).await.unwrap();
+    let i: Option<i32> = storage.get("int_val").unwrap();
+    assert_eq!(i, Some(42));
+
+    // Float
+    storage.set("float_val", &42.5f64).await.unwrap();
+    let f: Option<f64> = storage.get("float_val").unwrap();
+    assert_eq!(f, Some(42.5));
+
+    // Boolean
+    storage.set("bool_val", &true).await.unwrap();
+    let b: Option<bool> = storage.get("bool_val").unwrap();
+    assert_eq!(b, Some(true));
+
+    // Vector
+    storage.set("vec_val", &vec![1, 2, 3]).await.unwrap();
+    let v: Option<Vec<i32>> = storage.get("vec_val").unwrap();
+    assert_eq!(v, Some(vec![1, 2, 3]));
+
+    // Option types
+    storage
+        .set("some_val", &Some("value".to_string()))
+        .await
+        .unwrap();
+    let opt: Option<Option<String>> = storage.get("some_val").unwrap();
+    assert_eq!(opt, Some(Some("value".to_string())));
+
+    storage.set("none_val", &None::<String>).await.unwrap();
+    let none: Option<Option<String>> = storage.get("none_val").unwrap();
+    assert_eq!(none, Some(None));
+}
+
+// ============================================================================
+// Update and Overwrite Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_overwrite_existing_values() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut storage = JsonFileStorage::new(Some(temp_dir.path().to_path_buf())).unwrap();
+
+    // Set initial value
+    storage.set("key", &"initial").await.unwrap();
+    let val: Option<String> = storage.get("key").unwrap();
+    assert_eq!(val, Some("initial".to_string()));
+
+    // Overwrite with new value
+    storage.set("key", &"updated").await.unwrap();
+    let val: Option<String> = storage.get("key").unwrap();
+    assert_eq!(val, Some("updated".to_string()));
+
+    // Overwrite with different type
+    storage.set("key", &42).await.unwrap();
+    let val: Option<i32> = storage.get("key").unwrap();
+    assert_eq!(val, Some(42));
+}
+
+#[tokio::test]
+async fn test_partial_nested_updates() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut storage = JsonFileStorage::new(Some(temp_dir.path().to_path_buf())).unwrap();
+
+    // Set multiple nested values
+    storage.set("config.api", &"api1").await.unwrap();
+    storage.set("config.identity", &"identity1").await.unwrap();
+
+    // Update only one nested value
+    storage.set("config.api", &"api2").await.unwrap();
+
+    // Verify update
+    let api: Option<String> = storage.get("config.api").unwrap();
+    assert_eq!(api, Some("api2".to_string()));
+
+    // Verify other value unchanged
+    let identity: Option<String> = storage.get("config.identity").unwrap();
+    assert_eq!(identity, Some("identity1".to_string()));
+}
+
+// ============================================================================
+// Remove Operations Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_remove_nested_keys() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut storage = JsonFileStorage::new(Some(temp_dir.path().to_path_buf())).unwrap();
+
+    // Set nested values
+    storage.set("parent.child1", &"value1").await.unwrap();
+    storage.set("parent.child2", &"value2").await.unwrap();
+
+    // Remove one child
+    let removed = storage.remove("parent.child1").await.unwrap();
+    assert!(removed);
+
+    // Verify removal
+    assert!(!storage.has("parent.child1").unwrap());
+
+    // Verify other child still exists
+    assert!(storage.has("parent.child2").unwrap());
+}
+
+#[tokio::test]
+async fn test_remove_and_recreate() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().to_path_buf();
+
+    {
+        let mut storage = JsonFileStorage::new(Some(path.clone())).unwrap();
+        storage.set("key", &"value").await.unwrap();
+        storage.remove("key").await.unwrap();
+    }
+
+    // Verify removal persists
+    {
+        let storage = JsonFileStorage::new(Some(path.clone())).unwrap();
+        assert!(!storage.has("key").unwrap());
+    }
+
+    // Recreate the key
+    {
+        let mut storage = JsonFileStorage::new(Some(path.clone())).unwrap();
+        storage.set("key", &"new_value").await.unwrap();
+    }
+
+    // Verify recreation
+    {
+        let storage = JsonFileStorage::new(Some(path.clone())).unwrap();
+        let val: Option<String> = storage.get("key").unwrap();
+        assert_eq!(val, Some("new_value".to_string()));
+    }
+}
+
+// ============================================================================
+// Edge Case Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_keys_with_special_characters() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut storage = JsonFileStorage::new(Some(temp_dir.path().to_path_buf())).unwrap();
+
+    // Test various special characters in keys (but not dots, as those are path separators)
+    let special_keys = vec![
+        "key_with_underscore",
+        "key-with-dash",
+        "key@with@at",
+        "key#with#hash",
+        "key$with$dollar",
+        "key with spaces",
+    ];
+
+    for key in special_keys {
+        storage.set(key, &format!("value_{}", key)).await.unwrap();
+        let val: Option<String> = storage.get(key).unwrap();
+        assert_eq!(val, Some(format!("value_{}", key)));
+    }
+}
+
+#[tokio::test]
+async fn test_large_value_storage() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut storage = JsonFileStorage::new(Some(temp_dir.path().to_path_buf())).unwrap();
+
+    // Create a large string value (1MB)
+    let large_value = "x".repeat(1024 * 1024);
+    storage.set("large_key", &large_value).await.unwrap();
+
+    let retrieved: Option<String> = storage.get("large_key").unwrap();
+    assert_eq!(retrieved, Some(large_value));
+}
+
+#[tokio::test]
+async fn test_many_keys_storage() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut storage = JsonFileStorage::new(Some(temp_dir.path().to_path_buf())).unwrap();
+
+    // Store many keys
+    let num_keys = 1000;
+    for i in 0..num_keys {
+        storage.set(&format!("key_{}", i), &i).await.unwrap();
+    }
+
+    // Verify all keys exist
+    for i in 0..num_keys {
+        let val: Option<i32> = storage.get(&format!("key_{}", i)).unwrap();
+        assert_eq!(val, Some(i));
+    }
+}
+
+// ============================================================================
+// File System Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_file_format_is_valid_json() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().to_path_buf();
+    let file_path = path.join("data.json");
+
+    {
+        let mut storage = JsonFileStorage::new(Some(path.clone())).unwrap();
+        storage.set("key1", &"value1").await.unwrap();
+        storage.set("key2", &42).await.unwrap();
+    }
+
+    // Read raw file and verify it's valid JSON
+    let contents = fs::read_to_string(&file_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+
+    // Verify structure
+    assert!(parsed.is_object());
+    assert!(parsed.get("key1").is_some());
+    assert!(parsed.get("key2").is_some());
+}
+
+#[tokio::test]
+async fn test_storage_file_location() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().to_path_buf();
+    let expected_file = path.join("data.json");
+
+    {
+        let mut storage = JsonFileStorage::new(Some(path.clone())).unwrap();
+        storage.set("test", &"value").await.unwrap();
+    }
+
+    // Verify file was created in expected location
+    assert!(expected_file.exists());
+    assert!(expected_file.is_file());
+}
