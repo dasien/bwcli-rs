@@ -55,6 +55,16 @@ impl BitwardenApiClient {
         let timeout = Duration::from_secs(timeout_seconds.unwrap_or(60));
 
         // Build HTTP client with all features
+        let mut default_headers = header::HeaderMap::new();
+        default_headers.insert(
+            header::HeaderName::from_static("bitwarden-client-name"),
+            header::HeaderValue::from_static("cli"),
+        );
+        default_headers.insert(
+            header::HeaderName::from_static("bitwarden-client-version"),
+            header::HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
+        );
+
         let http_client = ReqwestClient::builder()
             .timeout(timeout)
             .connect_timeout(Duration::from_secs(30))
@@ -62,6 +72,7 @@ impl BitwardenApiClient {
                 "Bitwarden_CLI/{} (Rust)",
                 env!("CARGO_PKG_VERSION")
             ))
+            .default_headers(default_headers)
             .use_rustls_tls()
             .build()
             .map_err(|e| ApiError::Configuration(format!("Failed to create HTTP client: {}", e)))?;
@@ -79,7 +90,7 @@ impl BitwardenApiClient {
     /// Build full URL from path
     ///
     /// When `use_identity` is true and path starts with `/identity/`, the prefix
-    /// is stripped since the identity base URL already includes `/identity`.
+    /// is stripped since the identity base URL is the identity server root.
     fn build_url(&self, path: &str, use_identity: bool) -> String {
         let base = if use_identity {
             self.environment.identity_url()
@@ -239,10 +250,16 @@ impl BitwardenApiClient {
     /// # Arguments
     /// * `path` - API path (automatically determines if identity vs API endpoint)
     /// * `body` - Request body that will be form-encoded
+    /// * `extra_headers` - Optional extra headers to include (e.g., Auth-Email for password login)
     ///
     /// # Returns
     /// Deserialized response of type R
-    pub async fn post_form<T, R>(&self, path: &str, body: &T) -> Result<R>
+    pub async fn post_form<T, R>(
+        &self,
+        path: &str,
+        body: &T,
+        extra_headers: Option<Vec<(&str, String)>>,
+    ) -> Result<R>
     where
         T: Serialize + Send + Sync,
         R: for<'de> Deserialize<'de>,
@@ -251,11 +268,96 @@ impl BitwardenApiClient {
         let use_identity = path.contains("/identity/") || path.contains("/connect/");
         let url = self.build_url(path, use_identity);
 
+        let mut request_builder = self
+            .http_client
+            .post(&url)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded; charset=utf-8")
+            .header(header::ACCEPT, "application/json")
+            .form(body);
+
+        // Add any extra headers
+        if let Some(headers) = extra_headers {
+            for (name, value) in headers {
+                request_builder = request_builder.header(name, value);
+            }
+        }
+
+        let request = request_builder.build()?;
+
+        let response = self.execute_with_retry(request, false).await?;
+        let data: R = response.json().await?;
+
+        Ok(data)
+    }
+
+    /// Post JSON to identity server endpoint
+    ///
+    /// # Arguments
+    /// * `path` - Path relative to identity server root
+    /// * `body` - Request body that will be JSON-encoded
+    pub async fn post_identity<T, R>(&self, path: &str, body: &T) -> Result<R>
+    where
+        T: Serialize + Send + Sync,
+        R: for<'de> Deserialize<'de>,
+    {
+        let url = self.build_url(path, true);
+
+        let request = self
+            .http_client
+            .post(&url)
+            .header(header::CONTENT_TYPE, "application/json")
+            .json(body)
+            .build()?;
+
+        let response = self.execute_with_retry(request, false).await?;
+        let data: R = response.json().await?;
+
+        Ok(data)
+    }
+
+    /// Post form-encoded data to identity server endpoint
+    ///
+    /// Used for OAuth2 token requests which require form encoding.
+    ///
+    /// # Arguments
+    /// * `path` - Path relative to identity server root
+    /// * `form_data` - Key-value pairs for form encoding
+    pub async fn post_identity_form<R>(&self, path: &str, form_data: &[(&str, String)]) -> Result<R>
+    where
+        R: for<'de> Deserialize<'de>,
+    {
+        let url = self.build_url(path, true);
+
         let request = self
             .http_client
             .post(&url)
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .form(body)
+            .form(form_data)
+            .build()?;
+
+        let response = self.execute_with_retry(request, false).await?;
+        let data: R = response.json().await?;
+
+        Ok(data)
+    }
+
+    /// GET with explicit authorization token
+    ///
+    /// Used when we have a token but haven't stored it yet (during login flow).
+    ///
+    /// # Arguments
+    /// * `path` - API path
+    /// * `access_token` - Bearer token for authorization
+    pub async fn get_authenticated<R>(&self, path: &str, access_token: &str) -> Result<R>
+    where
+        R: for<'de> Deserialize<'de>,
+    {
+        let url = self.build_url(path, false);
+
+        let request = self
+            .http_client
+            .get(&url)
+            .header(header::AUTHORIZATION, format!("Bearer {}", access_token))
             .build()?;
 
         let response = self.execute_with_retry(request, false).await?;

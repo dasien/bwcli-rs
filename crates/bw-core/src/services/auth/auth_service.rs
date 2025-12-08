@@ -150,10 +150,10 @@ impl AuthService {
             device_identifier: device_info.device_identifier.to_string(),
         };
 
-        // Authenticate with server
+        // Authenticate with server (no Auth-Email header for API key login)
         let login_response: LoginResponse = self
             .api_client
-            .post_form("/identity/connect/token", &request)
+            .post_form("/identity/connect/token", &request, None)
             .await
             .map_err(|e| AuthError::InvalidCredentials {
                 message: format!("API key authentication failed: {}", e),
@@ -214,8 +214,8 @@ impl AuthService {
                     message: "KDF configuration not found in storage".to_string(),
                 })?;
 
-        // Load encrypted user key
-        let encrypted_user_key: Option<String> = storage.get_secure("userKey").await?;
+        // Load encrypted user key (stored unencrypted on disk - it's already encrypted by server)
+        let encrypted_user_key: Option<String> = storage.get("userKey")?;
 
         drop(storage); // Release lock
 
@@ -272,10 +272,10 @@ impl AuthService {
 
         let mut storage = self.storage.lock().await;
 
-        // Clear all auth-related data
-        storage.remove_secure("accessToken").await?;
-        storage.remove_secure("refreshToken").await?;
-        storage.remove_secure("userKey").await?;
+        // Clear all auth-related data (tokens stored unencrypted)
+        storage.remove("accessToken").await?;
+        storage.remove("refreshToken").await?;
+        storage.remove("userKey").await?;
         storage.remove("userProfile").await?;
         storage.remove("kdfConfig").await?;
 
@@ -304,6 +304,11 @@ impl AuthService {
             .map_err(|e| AuthError::KdfError {
                 message: format!("Failed to fetch KDF config: {}", e),
             })?;
+
+        debug!(
+            "Prelogin response: kdf={}, iterations={}, memory={:?}, parallelism={:?}",
+            response.kdf, response.kdf_iterations, response.kdf_memory, response.kdf_parallelism
+        );
 
         Ok(KdfConfig {
             kdf: if response.kdf == 0 {
@@ -379,6 +384,8 @@ impl AuthService {
         device_info: &DeviceInfo,
         two_factor: Option<TwoFactorData>,
     ) -> Result<LoginResponse, AuthError> {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+
         let request = PasswordLoginRequest {
             grant_type: "password".to_string(),
             username: email.to_string(),
@@ -395,8 +402,29 @@ impl AuthService {
                 .map(|tf| if tf.remember { 1 } else { 0 }),
         };
 
+        // Required headers for password login:
+        // - Auth-Email: base64url encoded email (no padding)
+        // - Device-Type: device type as string (e.g., "7" for macOS)
+        let auth_email = URL_SAFE_NO_PAD.encode(email.as_bytes());
+        let device_type_str = device_info.device_type.to_string();
+        let extra_headers = vec![
+            ("Auth-Email", auth_email.clone()),
+            ("Device-Type", device_type_str.clone()),
+        ];
+
+        // Debug: log what we're sending
+        debug!(
+            "Login request: email={}, password_hash={}, device_type={}, device_name={}, device_id={}, auth_email_header={}",
+            email,
+            hashed_password,
+            device_info.device_type,
+            device_info.device_name,
+            device_info.device_identifier,
+            auth_email
+        );
+
         self.api_client
-            .post_form("/identity/connect/token", &request)
+            .post_form("/identity/connect/token", &request, Some(extra_headers))
             .await
             .map_err(|e| {
                 // TODO: Parse error response for 2FA requirement
@@ -408,17 +436,11 @@ impl AuthService {
 
     /// Fetch user profile
     async fn fetch_profile(&self, access_token: &str) -> Result<ProfileResponse, AuthError> {
-        // Temporarily store token for profile fetch
-        {
-            let mut storage = self.storage.lock().await;
-            storage
-                .set_secure("accessToken", &access_token.to_string())
-                .await?;
-        }
-
+        // Use get_authenticated which takes the token directly,
+        // avoiding the need to store it before the profile fetch
         let profile: ProfileResponse = self
             .api_client
-            .get_with_auth("/api/accounts/profile")
+            .get_authenticated("/api/accounts/profile", access_token)
             .await
             .map_err(|e| AuthError::Api(e.into()))?;
 
@@ -435,6 +457,10 @@ impl AuthService {
     }
 
     /// Persist authentication state to storage
+    ///
+    /// Note: Tokens are stored unencrypted on disk during login, similar to the
+    /// official TypeScript CLI when secure storage is not available.
+    /// The BW_SESSION key is only used for encrypting the vault cache, not the tokens.
     async fn persist_auth_state(
         &self,
         user_id: &str,
@@ -446,16 +472,19 @@ impl AuthService {
     ) -> Result<(), AuthError> {
         let mut storage = self.storage.lock().await;
 
-        // Store tokens (encrypted)
+        // Store tokens (unencrypted on disk, like official CLI without secure storage)
+        // The official CLI has 3 modes: SecureStorage, Disk (unencrypted), Memory
+        // We use Disk mode since we don't have platform secure storage integration yet
         storage
-            .set_secure("accessToken", &access_token.to_string())
+            .set("accessToken", &access_token.to_string())
             .await?;
         storage
-            .set_secure("refreshToken", &refresh_token.to_string())
+            .set("refreshToken", &refresh_token.to_string())
             .await?;
 
         if let Some(key) = encrypted_user_key {
-            storage.set_secure("userKey", &key.to_string()).await?;
+            // User key is already encrypted by the server with the master key
+            storage.set("userKey", &key.to_string()).await?;
         }
 
         // Store profile and config (plain)
@@ -486,12 +515,12 @@ impl AuthService {
     ) -> Result<(), AuthError> {
         let mut storage = self.storage.lock().await;
 
-        // Store tokens (encrypted)
+        // Store tokens (unencrypted on disk, like official CLI without secure storage)
         storage
-            .set_secure("accessToken", &access_token.to_string())
+            .set("accessToken", &access_token.to_string())
             .await?;
         storage
-            .set_secure("refreshToken", &refresh_token.to_string())
+            .set("refreshToken", &refresh_token.to_string())
             .await?;
 
         // Store profile

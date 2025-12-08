@@ -40,15 +40,31 @@ pub fn get_device_type() -> DeviceType {
 /// # Returns
 /// Configured SDK client ready for authentication and vault operations
 pub fn create_sdk_client(api_url: Option<String>, identity_url: Option<String>) -> Result<Client> {
-    let settings = ClientSettings {
-        api_url: api_url.unwrap_or_else(|| "https://api.bitwarden.com".to_string()),
-        identity_url: identity_url.unwrap_or_else(|| "https://identity.bitwarden.com".to_string()),
-        user_agent: format!("Bitwarden CLI/{}", env!("CARGO_PKG_VERSION")),
-        device_type: get_device_type(),
-        bitwarden_client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+    // If no custom URLs provided, use SDK defaults which are correct for Bitwarden cloud
+    let settings = match (&api_url, &identity_url) {
+        (None, None) => {
+            // Use SDK defaults but with CLI-specific device type and user agent
+            Some(ClientSettings {
+                device_type: get_device_type(),
+                user_agent: format!("Bitwarden CLI/{}", env!("CARGO_PKG_VERSION")),
+                bitwarden_client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                ..ClientSettings::default()
+            })
+        }
+        _ => {
+            // Custom URLs provided (self-hosted)
+            Some(ClientSettings {
+                api_url: api_url.unwrap_or_else(|| "https://api.bitwarden.com".to_string()),
+                identity_url: identity_url
+                    .unwrap_or_else(|| "https://identity.bitwarden.com".to_string()),
+                user_agent: format!("Bitwarden CLI/{}", env!("CARGO_PKG_VERSION")),
+                device_type: get_device_type(),
+                bitwarden_client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            })
+        }
     };
 
-    Ok(Client::new(Some(settings)))
+    Ok(Client::new(settings))
 }
 
 #[cfg(test)]

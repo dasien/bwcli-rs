@@ -89,8 +89,23 @@ impl Environment {
     }
 
     /// Default cloud environment
+    ///
+    /// Note: Bitwarden cloud uses separate domains for different services:
+    /// - API: https://api.bitwarden.com
+    /// - Identity: https://identity.bitwarden.com
+    /// - Web Vault: https://vault.bitwarden.com
     pub fn default_cloud() -> Self {
-        Self::from_base_url("https://vault.bitwarden.com").expect("Default cloud URL is valid")
+        Self {
+            base: "https://vault.bitwarden.com".to_string(),
+            urls: ServiceUrls {
+                api: "https://api.bitwarden.com".to_string(),
+                identity: "https://identity.bitwarden.com".to_string(),
+                web_vault: "https://vault.bitwarden.com".to_string(),
+                icons: "https://icons.bitwarden.net".to_string(),
+                notifications: "https://notifications.bitwarden.com".to_string(),
+                events: Some("https://events.bitwarden.com".to_string()),
+            },
+        }
     }
 
     /// Get API base URL
@@ -167,8 +182,8 @@ mod tests {
     #[test]
     fn test_default_cloud_environment() {
         let env = Environment::default_cloud();
-        assert_eq!(env.api_url(), "https://vault.bitwarden.com/api");
-        assert_eq!(env.identity_url(), "https://vault.bitwarden.com/identity");
+        assert_eq!(env.api_url(), "https://api.bitwarden.com");
+        assert_eq!(env.identity_url(), "https://identity.bitwarden.com");
     }
 
     #[test]

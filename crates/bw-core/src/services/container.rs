@@ -46,10 +46,16 @@ impl ServiceContainer {
         let storage = Arc::new(Mutex::new(JsonFileStorage::new(storage_path)?));
 
         // Determine environment URLs
-        let base_url = api_url
-            .or(identity_url)
-            .unwrap_or_else(|| "https://vault.bitwarden.com".to_string());
-        let environment = Environment::from_base_url(&base_url)?;
+        // Use default cloud environment if no custom URLs provided
+        let environment = match (&api_url, &identity_url) {
+            (None, None) => Environment::default_cloud(),
+            _ => {
+                let base_url = api_url
+                    .or(identity_url)
+                    .unwrap_or_else(|| "https://vault.bitwarden.com".to_string());
+                Environment::from_base_url(&base_url)?
+            }
+        };
 
         // Initialize API client (shares the same storage instance)
         let api_client = Arc::new(BitwardenApiClient::new(

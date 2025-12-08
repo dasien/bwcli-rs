@@ -1,3 +1,4 @@
+use bitwarden_core::auth::login::TwoFactorProvider as SdkTwoFactorProvider;
 use serde::{Deserialize, Serialize};
 
 /// Two-factor authentication data
@@ -9,6 +10,22 @@ pub struct TwoFactorData {
     pub provider: u8,
     /// Remember this device for 2FA
     pub remember: bool,
+}
+
+/// Convert a u8 provider code to SDK TwoFactorProvider
+pub fn provider_code_to_sdk(code: u8) -> SdkTwoFactorProvider {
+    match code {
+        0 => SdkTwoFactorProvider::Authenticator,
+        1 => SdkTwoFactorProvider::Email,
+        2 => SdkTwoFactorProvider::Duo,
+        3 => SdkTwoFactorProvider::Yubikey,
+        4 => SdkTwoFactorProvider::U2f,
+        5 => SdkTwoFactorProvider::Remember,
+        6 => SdkTwoFactorProvider::OrganizationDuo,
+        7 => SdkTwoFactorProvider::WebAuthn,
+        // Default to Authenticator for unknown codes
+        _ => SdkTwoFactorProvider::Authenticator,
+    }
 }
 
 /// Two-factor authentication method

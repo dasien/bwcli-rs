@@ -80,6 +80,22 @@ mod tests {
     }
 
     #[test]
+    fn test_derive_master_key_pbkdf2_600k() {
+        // Test vector from SDK master_password.rs
+        let password = "test_password";
+        let email = "test@example.com";
+        let kdf = Kdf::PBKDF2 {
+            iterations: NonZeroU32::new(600_000).unwrap(),
+        };
+
+        let master_key = derive_master_key(password, email, &kdf).expect("Should derive key");
+        let hash = hash_password_for_auth(&master_key, password);
+
+        // Expected hash from SDK test vectors (TEST_MASTER_PASSWORD_AUTHENTICATION_HASH)
+        assert_eq!(hash, "Lyry95vlXEJ5FE0EXjeR9zgcsFSU0qGhP9l5X2jwE38=");
+    }
+
+    #[test]
     fn test_derive_master_key_argon2id() {
         // Test vector from SDK
         let password = "asdfasdf";
@@ -136,4 +152,5 @@ mod tests {
         let result = decrypt_user_key(&master_key, "invalid");
         assert!(result.is_err());
     }
+
 }
