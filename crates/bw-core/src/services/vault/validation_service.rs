@@ -30,6 +30,7 @@ impl ValidationService {
             CipherType::SecureNote => self.validate_secure_note(cipher)?,
             CipherType::Card => self.validate_card(cipher)?,
             CipherType::Identity => self.validate_identity(cipher)?,
+            CipherType::SshKey => {} // No specific validation for SSH keys yet
         }
 
         // Field constraints

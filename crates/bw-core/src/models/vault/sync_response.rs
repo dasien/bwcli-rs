@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 /// API sync endpoint response
 ///
 /// Contains complete vault state from server.
-/// Returned by GET /api/sync
+/// Returned by GET /sync
+/// Note: API uses camelCase for top-level field names
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncResponse {
@@ -22,17 +23,21 @@ pub struct SyncResponse {
     #[serde(default)]
     pub collections: Vec<Collection>,
 
-    /// Organizations
+    /// Profile information
     #[serde(default)]
-    pub organizations: Vec<Organization>,
-
-    /// Profile information (optional, not used in MVP)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<serde_json::Value>,
 
-    /// Domains (optional, not used in MVP)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Domains
+    #[serde(default)]
     pub domains: Option<serde_json::Value>,
+
+    /// Policies
+    #[serde(default)]
+    pub policies: Option<serde_json::Value>,
+
+    /// Sends
+    #[serde(default)]
+    pub sends: Option<serde_json::Value>,
 }
 
 /// Vault data stored in local storage

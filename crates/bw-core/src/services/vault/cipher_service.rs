@@ -62,19 +62,21 @@ impl CipherService {
             } else {
                 None
             },
-            attachments: cipher.attachments.clone(),
+            attachments: cipher.attachments.clone().unwrap_or_default(),
             fields: {
                 let mut fields = Vec::new();
-                for field in &cipher.fields {
-                    fields.push(CipherFieldView {
-                        name: self.decrypt_string(&field.name).await?,
-                        value: if let Some(v) = &field.value {
-                            Some(self.decrypt_string(v).await?)
-                        } else {
-                            None
-                        },
-                        field_type: field.field_type,
-                    });
+                if let Some(cipher_fields) = &cipher.fields {
+                    for field in cipher_fields {
+                        fields.push(CipherFieldView {
+                            name: self.decrypt_string(&field.name).await?,
+                            value: if let Some(v) = &field.value {
+                                Some(self.decrypt_string(v).await?)
+                            } else {
+                                None
+                            },
+                            field_type: field.field_type,
+                        });
+                    }
                 }
                 fields
             },
@@ -349,6 +351,9 @@ impl CipherService {
             name: encrypted_name,
             notes: encrypted_notes,
             favorite: cipher_view.favorite,
+            edit: true,
+            view_password: true,
+            permissions: None,
             collection_ids: cipher_view.collection_ids.clone(),
             revision_date: cipher_view.revision_date.clone(),
             creation_date: cipher_view.creation_date.clone(),
@@ -357,9 +362,13 @@ impl CipherService {
             secure_note: encrypted_secure_note,
             card: encrypted_card,
             identity: encrypted_identity,
-            attachments: cipher_view.attachments.clone(),
-            fields: encrypted_fields,
-            password_history: vec![],
+            ssh_key: None,
+            attachments: Some(cipher_view.attachments.clone()),
+            fields: Some(encrypted_fields),
+            password_history: None,
+            organization_use_totp: false,
+            reprompt: 0,
+            key: None,
         })
     }
 
@@ -401,7 +410,10 @@ impl CipherService {
             password: encrypted_password,
             totp: encrypted_totp,
             uris: encrypted_uris,
+            uri: None,
             autofill_on_page_load: None,
+            password_revision_date: None,
+            fido2_credentials: None,
         })
     }
 

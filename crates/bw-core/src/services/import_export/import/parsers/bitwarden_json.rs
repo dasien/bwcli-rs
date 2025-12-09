@@ -20,6 +20,7 @@ impl BitwardenJsonParser {
             CipherType::SecureNote => ImportItemType::SecureNote,
             CipherType::Card => ImportItemType::Card,
             CipherType::Identity => ImportItemType::Identity,
+            CipherType::SshKey => ImportItemType::SecureNote, // Map SSH keys to SecureNote for now
         }
     }
 }

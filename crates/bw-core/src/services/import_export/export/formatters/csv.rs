@@ -122,6 +122,7 @@ impl CsvFormatter {
             CipherType::SecureNote => "note".to_string(),
             CipherType::Card => "card".to_string(),
             CipherType::Identity => "identity".to_string(),
+            CipherType::SshKey => "sshkey".to_string(),
         }
     }
 }

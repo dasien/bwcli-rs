@@ -40,7 +40,8 @@ impl TokenManager {
     /// Returns error if storage access fails
     pub async fn get_access_token(&self) -> Result<Option<Secret<String>>> {
         let storage = self.storage.lock().await;
-        let token_str = storage.get_secure("accessToken").await?;
+        // Tokens stored unencrypted on disk (like official CLI without secure storage)
+        let token_str: Option<String> = storage.get("accessToken")?;
         Ok(token_str.map(Secret::new))
     }
 
@@ -50,7 +51,8 @@ impl TokenManager {
     /// Secret-wrapped refresh token if available, None otherwise
     pub async fn get_refresh_token(&self) -> Result<Option<Secret<String>>> {
         let storage = self.storage.lock().await;
-        let token_str = storage.get_secure("refreshToken").await?;
+        // Tokens stored unencrypted on disk (like official CLI without secure storage)
+        let token_str: Option<String> = storage.get("refreshToken")?;
         Ok(token_str.map(Secret::new))
     }
 

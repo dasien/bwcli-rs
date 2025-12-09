@@ -22,7 +22,7 @@ pub struct Cipher {
     /// Folder ID (if in folder, null if no folder)
     pub folder_id: Option<String>,
 
-    /// Cipher type: 1=Login, 2=SecureNote, 3=Card, 4=Identity
+    /// Cipher type: 1=Login, 2=SecureNote, 3=Card, 4=Identity, 5=SshKey
     #[serde(rename = "type")]
     pub cipher_type: CipherType,
 
@@ -34,7 +34,20 @@ pub struct Cipher {
     pub notes: Option<String>,
 
     /// Whether this is a favorite
+    #[serde(default)]
     pub favorite: bool,
+
+    /// Whether the user can edit this cipher
+    #[serde(default)]
+    pub edit: bool,
+
+    /// Whether the user can view the password
+    #[serde(default = "default_true")]
+    pub view_password: bool,
+
+    /// Permissions for this cipher
+    #[serde(default)]
+    pub permissions: Option<CipherPermissions>,
 
     /// Collection IDs this cipher belongs to
     #[serde(default)]
@@ -67,17 +80,38 @@ pub struct Cipher {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<CipherIdentity>,
 
+    /// SSH key data (if type=5)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssh_key: Option<CipherSshKey>,
+
     /// Attachments
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attachments: Vec<CipherAttachment>,
+    #[serde(default)]
+    pub attachments: Option<Vec<CipherAttachment>>,
 
     /// Custom fields
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<CipherField>,
+    #[serde(default)]
+    pub fields: Option<Vec<CipherField>>,
 
     /// Password history
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub password_history: Vec<PasswordHistory>,
+    #[serde(default)]
+    pub password_history: Option<Vec<PasswordHistory>>,
+
+    /// Whether organization uses TOTP
+    #[serde(default)]
+    pub organization_use_totp: bool,
+
+    /// Master password re-prompt type (0=None, 1=Password)
+    #[serde(default)]
+    pub reprompt: u8,
+
+    /// Cipher encryption key (for key rotation)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+/// Default value for viewPassword (true if not provided)
+fn default_true() -> bool {
+    true
 }
 
 /// Cipher type enumeration
@@ -88,6 +122,37 @@ pub enum CipherType {
     SecureNote = 2,
     Card = 3,
     Identity = 4,
+    SshKey = 5,
+}
+
+/// Cipher permissions (for shared ciphers)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CipherPermissions {
+    /// Whether user can delete
+    #[serde(default)]
+    pub delete: bool,
+
+    /// Whether user can restore from trash
+    #[serde(default)]
+    pub restore: bool,
+}
+
+/// SSH key cipher type data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CipherSshKey {
+    /// Encrypted private key (EncString)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
+
+    /// Encrypted public key (EncString)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+
+    /// Encrypted key fingerprint (EncString)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_fingerprint: Option<String>,
 }
 
 /// Login cipher type data
@@ -106,6 +171,10 @@ pub struct CipherLogin {
     #[serde(default)]
     pub uris: Vec<CipherLoginUri>,
 
+    /// Legacy single URI field (deprecated, use uris)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+
     /// Encrypted TOTP secret (EncString)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub totp: Option<String>,
@@ -113,6 +182,71 @@ pub struct CipherLogin {
     /// Whether password should be auto-filled on page load
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autofill_on_page_load: Option<bool>,
+
+    /// Password revision date (ISO 8601)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password_revision_date: Option<String>,
+
+    /// FIDO2 credentials
+    #[serde(default)]
+    pub fido2_credentials: Option<Vec<Fido2Credential>>,
+}
+
+/// FIDO2 credential for passwordless login
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Fido2Credential {
+    /// Credential ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+
+    /// Encrypted key type
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_type: Option<String>,
+
+    /// Encrypted key algorithm
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_algorithm: Option<String>,
+
+    /// Encrypted key curve
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_curve: Option<String>,
+
+    /// Encrypted key value
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_value: Option<String>,
+
+    /// Relying party ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rp_id: Option<String>,
+
+    /// Relying party name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rp_name: Option<String>,
+
+    /// User handle
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_handle: Option<String>,
+
+    /// User name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_name: Option<String>,
+
+    /// User display name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_display_name: Option<String>,
+
+    /// Counter
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counter: Option<String>,
+
+    /// Discoverable status
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discoverable: Option<String>,
+
+    /// Creation date (ISO 8601)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creation_date: Option<String>,
 }
 
 /// Login URI

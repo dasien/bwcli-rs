@@ -37,9 +37,10 @@ impl SyncService {
         }
 
         // Fetch vault data from API
+        // Note: path is relative to api_url (https://api.bitwarden.com), so no /api prefix
         let sync_response: SyncResponse = self
             .api_client
-            .get_with_auth("/api/sync")
+            .get_with_auth("/sync")
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
@@ -50,7 +51,7 @@ impl SyncService {
             ciphers: sync_response.ciphers,
             folders: sync_response.folders,
             collections: sync_response.collections,
-            organizations: sync_response.organizations,
+            organizations: vec![], // Organizations come from profile, not sync response
         };
 
         // Store in local storage (atomic operation)

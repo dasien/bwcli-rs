@@ -408,7 +408,14 @@ impl ApiClient for BitwardenApiClient {
             .build()?;
 
         let response = self.execute_with_retry(request, true).await?;
-        let data: T = response.json().await?;
+
+        // Debug: get raw text first
+        let text = response.text().await?;
+        tracing::debug!("Raw API response (first 2000 chars): {}", &text[..text.len().min(2000)]);
+
+        // Then parse
+        let data: T = serde_json::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("JSON parse error: {} - Response: {}", e, &text[..text.len().min(500)]))?;
 
         Ok(data)
     }

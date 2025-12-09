@@ -46,8 +46,8 @@ impl From<Cipher> for CipherRequest {
             secure_note: cipher.secure_note,
             card: cipher.card,
             identity: cipher.identity,
-            fields: cipher.fields,
-            password_history: cipher.password_history,
+            fields: cipher.fields.unwrap_or_default(),
+            password_history: cipher.password_history.unwrap_or_default(),
         }
     }
 }
