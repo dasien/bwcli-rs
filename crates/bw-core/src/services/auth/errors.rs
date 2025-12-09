@@ -17,6 +17,9 @@ pub enum AuthError {
     #[error("Invalid two-factor code")]
     InvalidTwoFactorCode,
 
+    #[error("New device verification required")]
+    NewDeviceVerificationRequired,
+
     #[error("Not logged in")]
     NotLoggedIn,
 
@@ -72,6 +75,10 @@ impl AuthError {
             }
             Self::InvalidTwoFactorCode => {
                 "Invalid two-factor code. Please try again.".to_string()
+            }
+            Self::NewDeviceVerificationRequired => {
+                "New device verification required. Check your email for the verification code."
+                    .to_string()
             }
             Self::NotLoggedIn => {
                 "You are not logged in.\n\nRun 'bw login' to authenticate.".to_string()

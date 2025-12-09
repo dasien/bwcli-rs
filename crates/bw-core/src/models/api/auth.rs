@@ -25,7 +25,7 @@ pub struct PreloginResponse {
 /// Password login request (OAuth2 password grant)
 ///
 /// NOTE: This must be form-encoded, not JSON
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PasswordLoginRequest {
     /// OAuth2 grant type
     pub grant_type: String,
@@ -54,6 +54,10 @@ pub struct PasswordLoginRequest {
     pub two_factor_provider: Option<u8>,
     #[serde(rename = "twoFactorRemember", skip_serializing_if = "Option::is_none")]
     pub two_factor_remember: Option<u8>,
+
+    /// New device verification OTP (sent to user's email)
+    #[serde(rename = "newDeviceOtp", skip_serializing_if = "Option::is_none")]
+    pub new_device_otp: Option<String>,
 }
 
 /// API key login request (OAuth2 client credentials grant)
@@ -168,6 +172,7 @@ mod tests {
             two_factor_token: None,
             two_factor_provider: None,
             two_factor_remember: None,
+            new_device_otp: None,
         };
 
         let encoded = serde_urlencoded::to_string(&req).unwrap();

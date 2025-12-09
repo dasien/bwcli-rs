@@ -89,6 +89,21 @@ pub fn prompt_confirmation(prompt: &str) -> Result<bool> {
         .map_err(Into::into)
 }
 
+/// Prompt for new device verification OTP (sent via email)
+pub fn prompt_device_verification_otp() -> Result<String> {
+    eprintln!("New device verification required. Enter OTP sent to login email:");
+
+    let otp: String = Input::new()
+        .with_prompt("Device verification code")
+        .interact_text()?;
+
+    if otp.is_empty() {
+        anyhow::bail!("Device verification code cannot be empty");
+    }
+
+    Ok(otp)
+}
+
 /// Validate email format
 fn validate_email(email: &str) -> Result<()> {
     // Basic email validation: must contain @ and .

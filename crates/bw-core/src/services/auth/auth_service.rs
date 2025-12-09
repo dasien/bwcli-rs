@@ -58,6 +58,7 @@ impl AuthService {
     /// * `email` - User email address
     /// * `password` - Master password
     /// * `two_factor` - Optional 2FA data (if 2FA is required)
+    /// * `new_device_otp` - Optional new device verification OTP (sent via email)
     ///
     /// # Returns
     /// LoginResult with session key for BW_SESSION export
@@ -66,6 +67,7 @@ impl AuthService {
         email: &str,
         password: Secret<String>,
         two_factor: Option<TwoFactorData>,
+        new_device_otp: Option<String>,
     ) -> Result<LoginResult, AuthError> {
         info!("Starting password login for: {}", email);
 
@@ -87,7 +89,7 @@ impl AuthService {
         debug!("Authenticating with server");
         let device_info = self.get_device_info().await?;
         let login_response = self
-            .authenticate_password(email, &hashed_password, &device_info, two_factor)
+            .authenticate_password(email, &hashed_password, &device_info, two_factor, new_device_otp)
             .await?;
 
         // Step 5: Decrypt user key (if available)
@@ -414,6 +416,7 @@ impl AuthService {
         hashed_password: &str,
         device_info: &DeviceInfo,
         two_factor: Option<TwoFactorData>,
+        new_device_otp: Option<String>,
     ) -> Result<LoginResponse, AuthError> {
         use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
@@ -431,6 +434,7 @@ impl AuthService {
             two_factor_remember: two_factor
                 .as_ref()
                 .map(|tf| if tf.remember { 1 } else { 0 }),
+            new_device_otp,
         };
 
         // Required headers for password login:
@@ -458,6 +462,11 @@ impl AuthService {
             .post_form("/identity/connect/token", &request, Some(extra_headers))
             .await
             .map_err(|e| {
+                let error_str = e.to_string().to_lowercase();
+                // Check for new device verification required
+                if error_str.contains("new device verification required") {
+                    return AuthError::NewDeviceVerificationRequired;
+                }
                 // TODO: Parse error response for 2FA requirement
                 AuthError::InvalidCredentials {
                     message: format!("Authentication failed: {}", e),
