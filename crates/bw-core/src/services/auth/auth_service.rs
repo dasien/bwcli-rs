@@ -342,14 +342,14 @@ impl AuthService {
         );
 
         Ok(KdfConfig {
-            kdf: if response.kdf == 0 {
+            kdf_type: if response.kdf == 0 {
                 KdfType::PBKDF2SHA256
             } else {
                 KdfType::Argon2id
             },
-            kdf_iterations: Some(response.kdf_iterations),
-            kdf_memory: response.kdf_memory,
-            kdf_parallelism: response.kdf_parallelism,
+            iterations: Some(response.kdf_iterations),
+            memory: response.kdf_memory,
+            parallelism: response.kdf_parallelism,
         })
     }
 

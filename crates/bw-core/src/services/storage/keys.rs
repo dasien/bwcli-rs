@@ -125,11 +125,11 @@ impl StorageKey {
             }
             Self::UserKdfConfig => {
                 let uid = user_id.expect("UserKdfConfig requires user_id");
-                format!("user_{}_kdf_config", uid)
+                format!("user_{}_kdfConfig_kdfConfig", uid)
             }
             Self::UserKey => {
                 let uid = user_id.expect("UserKey requires user_id");
-                format!("user_{}_crypto_userKey", uid)
+                format!("user_{}_masterPassword_masterKeyEncryptedUserKey", uid)
             }
         }
     }
@@ -196,7 +196,7 @@ mod tests {
         );
         assert_eq!(
             StorageKey::UserKdfConfig.format(Some(user_id)),
-            "user_abc-123-def_kdf_config"
+            "user_abc-123-def_kdfConfig_kdfConfig"
         );
     }
 

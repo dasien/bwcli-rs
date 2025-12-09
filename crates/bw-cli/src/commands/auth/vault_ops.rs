@@ -41,15 +41,7 @@ pub async fn execute_lock(_cmd: LockCommand, _global_args: &GlobalArgs) -> Resul
 }
 
 /// Execute logout
-pub async fn execute_logout(_cmd: LogoutCommand, global_args: &GlobalArgs) -> Result<Response> {
-    // Confirmation prompt (unless --nointeraction)
-    if !global_args.nointeraction {
-        let confirmed = prompts::prompt_confirmation("Are you sure you want to log out?")?;
-        if !confirmed {
-            return Ok(Response::error("Logout cancelled"));
-        }
-    }
-
+pub async fn execute_logout(_cmd: LogoutCommand, _global_args: &GlobalArgs) -> Result<Response> {
     // Initialize services
     let container = ServiceContainer::new(None, None, None, None)?;
     let auth_service = AuthService::new(container.storage(), container.api_client());

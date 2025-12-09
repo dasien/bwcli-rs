@@ -31,8 +31,8 @@ fn test_status_response_format() {
 
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains(r#"{"success":false"#))
-        .stdout(predicate::str::contains("Not yet implemented"));
+        .stdout(predicate::str::contains(r#"{"success":true"#))
+        .stdout(predicate::str::contains("status"));
 }
 
 #[test]
@@ -50,7 +50,7 @@ fn test_pretty_flag() {
 
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("  \"success\": false"));
+        .stdout(predicate::str::contains("  \"success\": true"));
 }
 
 #[test]
