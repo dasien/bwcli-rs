@@ -1,6 +1,6 @@
 use super::errors::ApiError;
 use crate::models::api::token::{TokenRefreshRequest, TokenResponse};
-use crate::services::storage::{JsonFileStorage, Storage};
+use crate::services::storage::{JsonFileStorage, Storage, StorageKey};
 use anyhow::Result;
 use secrecy::{ExposeSecret, Secret};
 use std::sync::Arc;
@@ -40,8 +40,19 @@ impl TokenManager {
     /// Returns error if storage access fails
     pub async fn get_access_token(&self) -> Result<Option<Secret<String>>> {
         let storage = self.storage.lock().await;
-        // Tokens stored unencrypted on disk (like official CLI without secure storage)
-        let token_str: Option<String> = storage.get("accessToken")?;
+
+        // Get active user ID using namespaced key
+        let active_id_key = StorageKey::GlobalActiveAccountId.format(None);
+        let active_id: Option<serde_json::Value> = storage.get(&active_id_key)?;
+
+        let user_id = match active_id {
+            Some(serde_json::Value::String(id)) if !id.is_empty() => id,
+            _ => return Ok(None),
+        };
+
+        // Get access token for this user using namespaced key
+        let token_key = StorageKey::UserAccessToken.format(Some(&user_id));
+        let token_str: Option<String> = storage.get(&token_key)?;
         Ok(token_str.map(Secret::new))
     }
 
@@ -51,8 +62,19 @@ impl TokenManager {
     /// Secret-wrapped refresh token if available, None otherwise
     pub async fn get_refresh_token(&self) -> Result<Option<Secret<String>>> {
         let storage = self.storage.lock().await;
-        // Tokens stored unencrypted on disk (like official CLI without secure storage)
-        let token_str: Option<String> = storage.get("refreshToken")?;
+
+        // Get active user ID using namespaced key
+        let active_id_key = StorageKey::GlobalActiveAccountId.format(None);
+        let active_id: Option<serde_json::Value> = storage.get(&active_id_key)?;
+
+        let user_id = match active_id {
+            Some(serde_json::Value::String(id)) if !id.is_empty() => id,
+            _ => return Ok(None),
+        };
+
+        // Get refresh token for this user using namespaced key
+        let token_key = StorageKey::UserRefreshToken.format(Some(&user_id));
+        let token_str: Option<String> = storage.get(&token_key)?;
         Ok(token_str.map(Secret::new))
     }
 
@@ -127,16 +149,32 @@ impl TokenManager {
             .await
             .map_err(|e| anyhow::anyhow!("Token refresh failed: {}", e))?;
 
-        // Persist new tokens
+        // Persist new tokens with namespaced keys
         {
             let mut storage = self.storage.lock().await;
+
+            // Get active user ID
+            let active_id_key = StorageKey::GlobalActiveAccountId.format(None);
+            let active_id: Option<serde_json::Value> = storage.get(&active_id_key)?;
+
+            let user_id = match active_id {
+                Some(serde_json::Value::String(id)) if !id.is_empty() => id,
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "No active user during token refresh"
+                    ))
+                }
+            };
+
+            let access_token_key = StorageKey::UserAccessToken.format(Some(&user_id));
             storage
-                .set_secure("accessToken", &response.access_token)
+                .set_secure(&access_token_key, &response.access_token)
                 .await?;
 
             if let Some(new_refresh_token) = &response.refresh_token {
+                let refresh_token_key = StorageKey::UserRefreshToken.format(Some(&user_id));
                 storage
-                    .set_secure("refreshToken", new_refresh_token)
+                    .set_secure(&refresh_token_key, new_refresh_token)
                     .await?;
             }
         }
@@ -152,22 +190,33 @@ impl TokenManager {
     /// Save tokens after successful login
     ///
     /// # Arguments
+    /// * `user_id` - User ID for namespaced key
     /// * `access_token` - New access token
     /// * `refresh_token` - New refresh token
-    pub async fn save_tokens(&self, access_token: &str, refresh_token: &str) -> Result<()> {
+    pub async fn save_tokens(
+        &self,
+        user_id: &str,
+        access_token: &str,
+        refresh_token: &str,
+    ) -> Result<()> {
         let mut storage = self.storage.lock().await;
-        storage.set_secure("accessToken", access_token).await?;
-        storage.set_secure("refreshToken", refresh_token).await?;
+        let access_key = StorageKey::UserAccessToken.format(Some(user_id));
+        let refresh_key = StorageKey::UserRefreshToken.format(Some(user_id));
+        storage.set_secure(&access_key, access_token).await?;
+        storage.set_secure(&refresh_key, refresh_token).await?;
         Ok(())
     }
 
-    /// Clear all stored tokens
+    /// Clear stored tokens for a user
     ///
-    /// Called on logout
-    pub async fn clear_tokens(&self) -> Result<()> {
+    /// Called on logout. Sets tokens to null (not removed) to match TypeScript CLI behavior.
+    pub async fn clear_tokens(&self, user_id: &str) -> Result<()> {
         let mut storage = self.storage.lock().await;
-        storage.remove_secure("accessToken").await?;
-        storage.remove_secure("refreshToken").await?;
+        let access_key = StorageKey::UserAccessToken.format(Some(user_id));
+        let refresh_key = StorageKey::UserRefreshToken.format(Some(user_id));
+        // Set to null instead of removing (TypeScript CLI compatibility)
+        storage.set(&access_key, &serde_json::Value::Null).await?;
+        storage.set(&refresh_key, &serde_json::Value::Null).await?;
         Ok(())
     }
 }

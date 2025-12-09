@@ -152,5 +152,4 @@ mod tests {
         let result = decrypt_user_key(&master_key, "invalid");
         assert!(result.is_err());
     }
-
 }

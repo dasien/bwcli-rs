@@ -107,6 +107,20 @@ pub struct Cipher {
     /// Cipher encryption key (for key rotation)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+
+    /// Object type indicator (e.g., "cipher")
+    /// Used by TypeScript CLI for type identification
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<String>,
+
+    /// Archived date (ISO 8601, if archived)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_date: Option<String>,
+
+    /// Legacy data field - contains JSON string of cipher data
+    /// This is a deprecated format but still returned by the API
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 /// Default value for viewPassword (true if not provided)
@@ -115,7 +129,9 @@ fn default_true() -> bool {
 }
 
 /// Cipher type enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Deserializes from integer values (1-5) as returned by the API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CipherType {
     Login = 1,
@@ -123,6 +139,35 @@ pub enum CipherType {
     Card = 3,
     Identity = 4,
     SshKey = 5,
+}
+
+impl Serialize for CipherType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u8(*self as u8)
+    }
+}
+
+impl<'de> Deserialize<'de> for CipherType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u8::deserialize(deserializer)?;
+        match value {
+            1 => Ok(CipherType::Login),
+            2 => Ok(CipherType::SecureNote),
+            3 => Ok(CipherType::Card),
+            4 => Ok(CipherType::Identity),
+            5 => Ok(CipherType::SshKey),
+            _ => Err(serde::de::Error::custom(format!(
+                "unknown cipher type: {}",
+                value
+            ))),
+        }
+    }
 }
 
 /// Cipher permissions (for shared ciphers)

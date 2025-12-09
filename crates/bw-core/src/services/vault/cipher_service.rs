@@ -369,6 +369,9 @@ impl CipherService {
             organization_use_totp: false,
             reprompt: 0,
             key: None,
+            object: Some("cipher".to_string()),
+            archived_date: None,
+            data: None,
         })
     }
 

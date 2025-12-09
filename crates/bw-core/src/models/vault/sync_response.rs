@@ -2,6 +2,7 @@
 
 use super::{Cipher, Collection, Folder, Organization};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// API sync endpoint response
 ///
@@ -38,6 +39,11 @@ pub struct SyncResponse {
     /// Sends
     #[serde(default)]
     pub sends: Option<serde_json::Value>,
+
+    /// Capture unknown fields for forward compatibility
+    /// This ensures we don't lose data when the API adds new fields
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 /// Vault data stored in local storage

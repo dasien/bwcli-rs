@@ -4,13 +4,13 @@ use crate::models::{
         ProfileResponse,
     },
     auth::{DeviceInfo, LoginResult, TwoFactorData, UnlockResult},
-    state::{KdfConfig, KdfType, UserProfile},
+    state::{KdfConfig, KdfType},
 };
 use crate::services::{
     api::{ApiClient, BitwardenApiClient},
     auth::{errors::AuthError, session_manager::SessionManager},
     crypto,
-    storage::{JsonFileStorage, Storage},
+    storage::{AccountManager, JsonFileStorage, Storage, StorageKey},
 };
 use anyhow::Result;
 use bitwarden_crypto::{CryptoError, Kdf, MasterKey, SymmetricCryptoKey};
@@ -30,18 +30,26 @@ pub struct AuthService {
     storage: Arc<Mutex<JsonFileStorage>>,
     api_client: Arc<BitwardenApiClient>,
     session_manager: Arc<SessionManager>,
+    account_manager: Arc<AccountManager>,
 }
 
 impl AuthService {
     /// Create new authentication service
     pub fn new(storage: Arc<Mutex<JsonFileStorage>>, api_client: Arc<BitwardenApiClient>) -> Self {
         let session_manager = Arc::new(SessionManager::new(Arc::clone(&storage)));
+        let account_manager = Arc::new(AccountManager::new(Arc::clone(&storage)));
 
         Self {
             storage,
             api_client,
             session_manager,
+            account_manager,
         }
+    }
+
+    /// Get a reference to the account manager
+    pub fn account_manager(&self) -> &Arc<AccountManager> {
+        &self.account_manager
     }
 
     /// Login with email and password
@@ -195,27 +203,32 @@ impl AuthService {
     pub async fn unlock(&self, password: Secret<String>) -> Result<UnlockResult, AuthError> {
         info!("Starting vault unlock");
 
-        // Check if logged in
+        // Get active user ID
+        let user_id = self
+            .account_manager
+            .get_active_user_id()
+            .await?
+            .ok_or(AuthError::NotLoggedIn)?;
+
+        // Get account info for email
+        let account = self
+            .account_manager
+            .get_account(&user_id)
+            .await?
+            .ok_or(AuthError::NotLoggedIn)?;
+
+        let email = account.email;
+
+        // Load KDF configuration using namespaced key
         let storage = self.storage.lock().await;
-        let profile: Option<UserProfile> = storage.get("userProfile")?;
+        let kdf_key = StorageKey::UserKdfConfig.format(Some(&user_id));
+        let kdf_config: KdfConfig = storage.get(&kdf_key)?.ok_or_else(|| AuthError::KdfError {
+            message: "KDF configuration not found in storage".to_string(),
+        })?;
 
-        if profile.is_none() {
-            return Err(AuthError::NotLoggedIn);
-        }
-
-        let profile = profile.unwrap();
-        let email = profile.email;
-
-        // Load KDF configuration
-        let kdf_config: KdfConfig =
-            storage
-                .get("kdfConfig")?
-                .ok_or_else(|| AuthError::KdfError {
-                    message: "KDF configuration not found in storage".to_string(),
-                })?;
-
-        // Load encrypted user key (stored unencrypted on disk - it's already encrypted by server)
-        let encrypted_user_key: Option<String> = storage.get("userKey")?;
+        // Load encrypted user key using namespaced key
+        let user_key_key = StorageKey::UserKey.format(Some(&user_id));
+        let encrypted_user_key: Option<String> = storage.get(&user_key_key)?;
 
         drop(storage); // Release lock
 
@@ -253,8 +266,8 @@ impl AuthService {
     pub async fn lock(&self) -> Result<(), AuthError> {
         info!("Locking vault");
 
-        // Check if logged in
-        let logged_in = self.session_manager.is_logged_in().await?;
+        // Check if logged in using account manager
+        let logged_in = self.account_manager.is_logged_in().await?;
         if !logged_in {
             return Err(AuthError::NotLoggedIn);
         }
@@ -270,19 +283,37 @@ impl AuthService {
     pub async fn logout(&self) -> Result<(), AuthError> {
         info!("Logging out");
 
+        // Get active user ID before clearing
+        let user_id = self
+            .account_manager
+            .get_active_user_id()
+            .await?
+            .ok_or(AuthError::NotLoggedIn)?;
+
         let mut storage = self.storage.lock().await;
 
-        // Clear all auth-related data (tokens stored unencrypted)
-        storage.remove("accessToken").await?;
-        storage.remove("refreshToken").await?;
-        storage.remove("userKey").await?;
-        storage.remove("userProfile").await?;
-        storage.remove("kdfConfig").await?;
+        // Clear user-specific tokens using namespaced keys (set to null, don't remove)
+        // This matches TypeScript CLI behavior
+        storage
+            .set(
+                &StorageKey::UserAccessToken.format(Some(&user_id)),
+                &serde_json::Value::Null,
+            )
+            .await?;
+        storage
+            .set(
+                &StorageKey::UserRefreshToken.format(Some(&user_id)),
+                &serde_json::Value::Null,
+            )
+            .await?;
 
         storage.flush().await?;
+        drop(storage);
+
+        // Clear active account (but preserve in accounts registry)
+        self.account_manager.clear_active_account().await?;
 
         // Clear session key hint
-        drop(storage);
         self.session_manager.clear_session_key().await?;
 
         info!("Logout complete");
@@ -459,9 +490,14 @@ impl AuthService {
 
     /// Persist authentication state to storage
     ///
-    /// Note: Tokens are stored unencrypted on disk during login, similar to the
-    /// official TypeScript CLI when secure storage is not available.
-    /// The BW_SESSION key is only used for encrypting the vault cache, not the tokens.
+    /// Uses TypeScript CLI compatible namespaced keys:
+    /// - `stateVersion`: 73 (if not already set)
+    /// - `global_account_accounts`: account registry
+    /// - `global_account_activeAccountId`: currently active user
+    /// - `user_{id}_token_accessToken`: access token
+    /// - `user_{id}_token_refreshToken`: refresh token
+    /// - `user_{id}_crypto_userKey`: encrypted user key
+    /// - `user_{id}_kdf_config`: KDF configuration
     async fn persist_auth_state(
         &self,
         user_id: &str,
@@ -473,33 +509,46 @@ impl AuthService {
     ) -> Result<(), AuthError> {
         let mut storage = self.storage.lock().await;
 
-        // Store tokens (unencrypted on disk, like official CLI without secure storage)
-        // The official CLI has 3 modes: SecureStorage, Disk (unencrypted), Memory
-        // We use Disk mode since we don't have platform secure storage integration yet
+        // Ensure state version is set (for new storage files)
+        storage.ensure_state_version().await?;
+
+        // Register account in global accounts registry
+        drop(storage); // Release lock for account_manager
+        self.account_manager
+            .register_account(user_id, email)
+            .await?;
+
+        // Set as active account
+        self.account_manager.set_active_user_id(user_id).await?;
+
+        // Re-acquire storage lock
+        let mut storage = self.storage.lock().await;
+
+        // Store tokens with user-namespaced keys
         storage
-            .set("accessToken", &access_token.to_string())
+            .set(
+                &StorageKey::UserAccessToken.format(Some(user_id)),
+                &access_token.to_string(),
+            )
             .await?;
         storage
-            .set("refreshToken", &refresh_token.to_string())
+            .set(
+                &StorageKey::UserRefreshToken.format(Some(user_id)),
+                &refresh_token.to_string(),
+            )
             .await?;
 
         if let Some(key) = encrypted_user_key {
             // User key is already encrypted by the server with the master key
-            storage.set("userKey", &key.to_string()).await?;
+            storage
+                .set(&StorageKey::UserKey.format(Some(user_id)), &key.to_string())
+                .await?;
         }
 
-        // Store profile and config (plain)
-        let profile = UserProfile {
-            id: user_id.to_string(),
-            email: email.to_string(),
-            name: None,
-            email_verified: true,
-            premium: false,
-            security_stamp: None,
-        };
-
-        storage.set("userProfile", &profile).await?;
-        storage.set("kdfConfig", &kdf_config).await?;
+        // Store KDF config with user-namespaced key
+        storage
+            .set(&StorageKey::UserKdfConfig.format(Some(user_id)), kdf_config)
+            .await?;
 
         storage.flush().await?;
 
@@ -507,6 +556,9 @@ impl AuthService {
     }
 
     /// Persist API key authentication state (no KDF or user key)
+    ///
+    /// Uses TypeScript CLI compatible namespaced keys like `persist_auth_state`,
+    /// but without KDF config or user key (API key login doesn't provide these).
     async fn persist_api_key_auth_state(
         &self,
         user_id: &str,
@@ -516,25 +568,35 @@ impl AuthService {
     ) -> Result<(), AuthError> {
         let mut storage = self.storage.lock().await;
 
-        // Store tokens (unencrypted on disk, like official CLI without secure storage)
-        storage
-            .set("accessToken", &access_token.to_string())
-            .await?;
-        storage
-            .set("refreshToken", &refresh_token.to_string())
+        // Ensure state version is set (for new storage files)
+        storage.ensure_state_version().await?;
+
+        // Register account in global accounts registry
+        drop(storage); // Release lock for account_manager
+        self.account_manager
+            .register_account(user_id, email)
             .await?;
 
-        // Store profile
-        let profile = UserProfile {
-            id: user_id.to_string(),
-            email: email.to_string(),
-            name: None,
-            email_verified: true,
-            premium: false,
-            security_stamp: None,
-        };
+        // Set as active account
+        self.account_manager.set_active_user_id(user_id).await?;
 
-        storage.set("userProfile", &profile).await?;
+        // Re-acquire storage lock
+        let mut storage = self.storage.lock().await;
+
+        // Store tokens with user-namespaced keys
+        storage
+            .set(
+                &StorageKey::UserAccessToken.format(Some(user_id)),
+                &access_token.to_string(),
+            )
+            .await?;
+        storage
+            .set(
+                &StorageKey::UserRefreshToken.format(Some(user_id)),
+                &refresh_token.to_string(),
+            )
+            .await?;
+
         storage.flush().await?;
 
         Ok(())

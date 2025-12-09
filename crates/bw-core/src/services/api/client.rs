@@ -271,7 +271,10 @@ impl BitwardenApiClient {
         let mut request_builder = self
             .http_client
             .post(&url)
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded; charset=utf-8")
+            .header(
+                header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded; charset=utf-8",
+            )
             .header(header::ACCEPT, "application/json")
             .form(body);
 
@@ -411,11 +414,19 @@ impl ApiClient for BitwardenApiClient {
 
         // Debug: get raw text first
         let text = response.text().await?;
-        tracing::debug!("Raw API response (first 2000 chars): {}", &text[..text.len().min(2000)]);
+        tracing::debug!(
+            "Raw API response (first 2000 chars): {}",
+            &text[..text.len().min(2000)]
+        );
 
         // Then parse
-        let data: T = serde_json::from_str(&text)
-            .map_err(|e| anyhow::anyhow!("JSON parse error: {} - Response: {}", e, &text[..text.len().min(500)]))?;
+        let data: T = serde_json::from_str(&text).map_err(|e| {
+            anyhow::anyhow!(
+                "JSON parse error: {} - Response: {}",
+                e,
+                &text[..text.len().min(500)]
+            )
+        })?;
 
         Ok(data)
     }

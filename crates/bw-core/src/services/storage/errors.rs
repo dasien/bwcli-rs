@@ -42,4 +42,15 @@ pub enum StorageError {
 
     #[error("Not implemented: {0}")]
     NotImplemented(String),
+
+    #[error(
+        "Unsupported state version {found}. This CLI requires version {required}+. Run the TypeScript CLI to upgrade your data."
+    )]
+    UnsupportedStateVersion { found: u64, required: u64 },
+
+    #[error("No active account. Please log in first.")]
+    NoActiveAccount,
+
+    #[error("Account not found: {user_id}")]
+    AccountNotFound { user_id: String },
 }

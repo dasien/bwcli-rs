@@ -1,5 +1,9 @@
 use super::{
-    atomic::AtomicWriter, errors::StorageError, path::StoragePath, secure::SecureStorage,
+    atomic::AtomicWriter,
+    errors::StorageError,
+    keys::{SUPPORTED_STATE_VERSION, StorageKey},
+    path::StoragePath,
+    secure::SecureStorage,
     traits::Storage,
 };
 use anyhow::Result;
@@ -10,14 +14,17 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tracing::debug;
 
 /// JSON-based file storage with support for secure (encrypted) values
 ///
-/// Storage format is compatible with TypeScript CLI's LowDB format:
+/// Storage format is compatible with TypeScript CLI's namespaced format:
 /// - Single JSON file (data.json)
-/// - Flat key-value structure
+/// - Namespaced key patterns (e.g., `global_account_accounts`, `user_{id}_token_accessToken`)
+/// - State version tracked at `stateVersion` key (currently 73)
 /// - Keys with __PROTECTED__ prefix are encrypted
 /// - Values are JSON types (string, number, object, array, etc.)
+/// - Unknown keys are preserved when writing to maintain cross-CLI compatibility
 pub struct JsonFileStorage {
     /// In-memory cache of storage contents
     /// Uses Mutex for interior mutability (required for get operations)
@@ -76,7 +83,49 @@ impl JsonFileStorage {
         let data: HashMap<String, Value> = serde_json::from_str(&contents)
             .map_err(|e| StorageError::ParseError(e, path.clone()))?;
 
+        // Validate state version if present
+        if let Some(version_value) = data.get("stateVersion") {
+            if let Some(version) = version_value.as_u64() {
+                if version < SUPPORTED_STATE_VERSION {
+                    return Err(StorageError::UnsupportedStateVersion {
+                        found: version,
+                        required: SUPPORTED_STATE_VERSION,
+                    }
+                    .into());
+                }
+                debug!("Loaded storage with state version {}", version);
+            }
+        }
+
         Ok(Arc::new(Mutex::new(data)))
+    }
+
+    /// Ensure state version is set in storage
+    ///
+    /// Called during login to initialize the state version for new storage
+    /// or verify compatibility for existing storage.
+    pub async fn ensure_state_version(&mut self) -> Result<()> {
+        let has_version = {
+            let data = self.data.lock().unwrap();
+            data.contains_key("stateVersion")
+        };
+
+        if !has_version {
+            debug!("Initializing state version to {}", SUPPORTED_STATE_VERSION);
+            self.set(
+                &StorageKey::StateVersion.format(None),
+                &SUPPORTED_STATE_VERSION,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Get the current state version
+    pub fn get_state_version(&self) -> Option<u64> {
+        let data = self.data.lock().unwrap();
+        data.get("stateVersion").and_then(|v| v.as_u64())
     }
 
     /// Get nested value by dot-separated path
