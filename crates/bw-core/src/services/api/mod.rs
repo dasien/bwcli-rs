@@ -1,4 +1,5 @@
 mod client;
+pub mod endpoints;
 mod environment;
 mod errors;
 mod token_manager;

@@ -1,5 +1,6 @@
 //! LastPass CSV import parser
 
+use super::non_empty;
 use crate::services::import_export::errors::ImportError;
 use crate::services::import_export::import::*;
 use async_trait::async_trait;
@@ -55,16 +56,8 @@ impl ImportParser for LastPassParser {
 
             // Create login item
             let login = Some(ImportLogin {
-                username: if username.is_empty() {
-                    None
-                } else {
-                    Some(username)
-                },
-                password: if password.is_empty() {
-                    None
-                } else {
-                    Some(password)
-                },
+                username: non_empty(&username),
+                password: non_empty(&password),
                 uris: if url.is_empty() {
                     Vec::new()
                 } else {
@@ -75,14 +68,10 @@ impl ImportParser for LastPassParser {
 
             let item = ImportItem {
                 item_type: ImportItemType::Login,
-                folder_name: if grouping.is_empty() {
-                    None
-                } else {
-                    Some(grouping)
-                },
+                folder_name: non_empty(&grouping),
                 favorite: fav,
                 name,
-                notes: if extra.is_empty() { None } else { Some(extra) },
+                notes: non_empty(&extra),
                 fields: Vec::new(),
                 login,
                 card: None,

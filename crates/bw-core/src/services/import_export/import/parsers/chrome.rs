@@ -1,5 +1,6 @@
 //! Chrome passwords CSV import parser
 
+use super::non_empty;
 use crate::services::import_export::errors::ImportError;
 use crate::services::import_export::import::*;
 use async_trait::async_trait;
@@ -41,16 +42,8 @@ impl ImportParser for ChromeParser {
                 let password = record.get(3).unwrap_or("").to_string();
 
                 let login = Some(ImportLogin {
-                    username: if username.is_empty() {
-                        None
-                    } else {
-                        Some(username)
-                    },
-                    password: if password.is_empty() {
-                        None
-                    } else {
-                        Some(password)
-                    },
+                    username: non_empty(&username),
+                    password: non_empty(&password),
                     uris: if url.is_empty() {
                         Vec::new()
                     } else {

@@ -8,7 +8,7 @@
 
 use super::{CipherService, ConfirmationService, ValidationService, VaultError};
 use crate::models::vault::{Cipher, CipherRequest, CipherView, Folder, FolderRequest, VaultData};
-use crate::services::api::{ApiClient, BitwardenApiClient};
+use crate::services::api::{endpoints, ApiClient, BitwardenApiClient};
 use crate::services::key_service::KeyService;
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage};
 use bitwarden_crypto::SymmetricCryptoKey;
@@ -94,7 +94,7 @@ impl WriteService {
         // 5. Send to API
         let created: Cipher = self
             .api_client
-            .post_with_auth("/api/ciphers", &request)
+            .post_with_auth(endpoints::api::ciphers::BASE, &request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
@@ -139,7 +139,7 @@ impl WriteService {
         // 7. Send to API
         let updated: Cipher = self
             .api_client
-            .put_with_auth(&format!("/api/ciphers/{}", id), &request)
+            .put_with_auth(&endpoints::api::ciphers::by_id(id), &request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
@@ -168,9 +168,9 @@ impl WriteService {
 
         // 3. Send delete to API
         let endpoint = if permanent {
-            format!("/api/ciphers/{}/delete", id)
+            endpoints::api::ciphers::delete(id)
         } else {
-            format!("/api/ciphers/{}", id)
+            endpoints::api::ciphers::by_id(id)
         };
 
         self.api_client
@@ -198,7 +198,7 @@ impl WriteService {
         let restored: Cipher = self
             .api_client
             .put_with_auth(
-                &format!("/api/ciphers/{}/restore", id),
+                &endpoints::api::ciphers::restore(id),
                 &serde_json::json!({}),
             )
             .await
@@ -261,7 +261,7 @@ impl WriteService {
         };
         let created: Folder = self
             .api_client
-            .post_with_auth("/api/folders", &folder_request)
+            .post_with_auth(endpoints::api::folders::BASE, &folder_request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
@@ -296,7 +296,7 @@ impl WriteService {
         };
         let updated: Folder = self
             .api_client
-            .put_with_auth(&format!("/api/folders/{}", id), &folder_request)
+            .put_with_auth(&endpoints::api::folders::by_id(id), &folder_request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
@@ -313,7 +313,7 @@ impl WriteService {
 
         // 2. Send delete to API
         self.api_client
-            .delete_with_auth(&format!("/api/folders/{}", id))
+            .delete_with_auth(&endpoints::api::folders::by_id(id))
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 

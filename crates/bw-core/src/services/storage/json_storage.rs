@@ -97,7 +97,7 @@ impl JsonFileStorage {
     /// or verify compatibility for existing storage.
     pub async fn ensure_state_version(&mut self) -> Result<()> {
         let has_version = {
-            let data = self.data.lock().unwrap();
+            let data = self.acquire_lock()?;
             data.contains_key("stateVersion")
         };
 
@@ -114,9 +114,9 @@ impl JsonFileStorage {
     }
 
     /// Get the current state version
-    pub fn get_state_version(&self) -> Option<u64> {
-        let data = self.data.lock().unwrap();
-        data.get("stateVersion").and_then(|v| v.as_u64())
+    pub fn get_state_version(&self) -> Result<Option<u64>> {
+        let data = self.acquire_lock()?;
+        Ok(data.get("stateVersion").and_then(|v| v.as_u64()))
     }
 
     /// Get nested value by dot-separated path
@@ -186,6 +186,15 @@ impl JsonFileStorage {
             false
         }
     }
+
+    /// Acquire lock on data, converting poison errors to StorageError
+    fn acquire_lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, HashMap<String, Value>>, StorageError> {
+        self.data
+            .lock()
+            .map_err(|e| StorageError::LockError(format!("Mutex poisoned: {}", e)))
+    }
 }
 
 #[async_trait]
@@ -194,7 +203,7 @@ impl Storage for JsonFileStorage {
     where
         T: for<'de> Deserialize<'de>,
     {
-        let data = self.data.lock().unwrap();
+        let data = self.acquire_lock()?;
         let root = Value::Object(data.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
 
         let value = Self::get_nested(&root, key);
@@ -217,7 +226,7 @@ impl Storage for JsonFileStorage {
             .map_err(|e| StorageError::SerializationError(e, key.to_string()))?;
 
         {
-            let mut data = self.data.lock().unwrap();
+            let mut data = self.acquire_lock()?;
             let mut root =
                 Value::Object(data.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
 
@@ -234,7 +243,7 @@ impl Storage for JsonFileStorage {
 
     async fn remove(&mut self, key: &str) -> Result<bool> {
         let removed = {
-            let mut data = self.data.lock().unwrap();
+            let mut data = self.acquire_lock()?;
             let mut root =
                 Value::Object(data.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
 
@@ -256,14 +265,14 @@ impl Storage for JsonFileStorage {
     }
 
     fn has(&self, key: &str) -> Result<bool> {
-        let data = self.data.lock().unwrap();
+        let data = self.acquire_lock()?;
         let root = Value::Object(data.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
 
         Ok(Self::get_nested(&root, key).is_some())
     }
 
     async fn flush(&mut self) -> Result<()> {
-        let data = self.data.lock().unwrap();
+        let data = self.acquire_lock()?;
         let json = serde_json::to_string_pretty(&*data)
             .map_err(|e| StorageError::SerializationError(e, "storage".to_string()))?;
 

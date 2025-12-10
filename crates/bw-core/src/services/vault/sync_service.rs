@@ -4,7 +4,7 @@
 
 use super::errors::VaultError;
 use crate::models::vault::{SyncResponse, VaultData};
-use crate::services::api::{ApiClient, BitwardenApiClient};
+use crate::services::api::{endpoints, ApiClient, BitwardenApiClient};
 use crate::services::storage::{JsonFileStorage, Storage};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -37,10 +37,9 @@ impl SyncService {
         }
 
         // Fetch vault data from API
-        // Note: path is relative to api_url (https://api.bitwarden.com), so no /api prefix
         let sync_response: SyncResponse = self
             .api_client
-            .get_with_auth("/sync")
+            .get_with_auth(endpoints::api::SYNC)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 

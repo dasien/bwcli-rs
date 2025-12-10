@@ -39,21 +39,7 @@ impl TokenManager {
     /// # Errors
     /// Returns error if storage access fails
     pub async fn get_access_token(&self) -> Result<Option<Secret<String>>> {
-        let storage = self.storage.lock().await;
-
-        // Get active user ID using namespaced key
-        let active_id_key = StorageKey::GlobalActiveAccountId.format(None);
-        let active_id: Option<serde_json::Value> = storage.get(&active_id_key)?;
-
-        let user_id = match active_id {
-            Some(serde_json::Value::String(id)) if !id.is_empty() => id,
-            _ => return Ok(None),
-        };
-
-        // Get access token for this user using namespaced key
-        let token_key = StorageKey::UserAccessToken.format(Some(&user_id));
-        let token_str: Option<String> = storage.get(&token_key)?;
-        Ok(token_str.map(Secret::new))
+        self.get_user_token(StorageKey::UserAccessToken).await
     }
 
     /// Get current refresh token
@@ -61,6 +47,13 @@ impl TokenManager {
     /// # Returns
     /// Secret-wrapped refresh token if available, None otherwise
     pub async fn get_refresh_token(&self) -> Result<Option<Secret<String>>> {
+        self.get_user_token(StorageKey::UserRefreshToken).await
+    }
+
+    /// Get a user token by storage key type
+    ///
+    /// Shared implementation for access and refresh token retrieval
+    async fn get_user_token(&self, key_type: StorageKey) -> Result<Option<Secret<String>>> {
         let storage = self.storage.lock().await;
 
         // Get active user ID using namespaced key
@@ -72,8 +65,8 @@ impl TokenManager {
             _ => return Ok(None),
         };
 
-        // Get refresh token for this user using namespaced key
-        let token_key = StorageKey::UserRefreshToken.format(Some(&user_id));
+        // Get token for this user using namespaced key
+        let token_key = key_type.format(Some(&user_id));
         let token_str: Option<String> = storage.get(&token_key)?;
         Ok(token_str.map(Secret::new))
     }

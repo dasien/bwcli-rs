@@ -3,6 +3,20 @@
 use crate::models::vault::{CipherType, CipherView, ValidationError};
 use regex::Regex;
 
+/// Field length limits for vault items
+///
+/// These limits match the Bitwarden server's validation rules.
+pub mod limits {
+    /// Maximum length for cipher name field
+    pub const CIPHER_NAME_MAX_LEN: usize = 1000;
+    /// Maximum length for cipher notes field
+    pub const CIPHER_NOTES_MAX_LEN: usize = 10000;
+    /// Maximum length for login URI field
+    pub const CIPHER_URI_MAX_LEN: usize = 10000;
+    /// Maximum length for folder name field
+    pub const FOLDER_NAME_MAX_LEN: usize = 1000;
+}
+
 /// Service for validating cipher and folder inputs before submission
 pub struct ValidationService {
     uuid_regex: Regex,
@@ -59,10 +73,10 @@ impl ValidationService {
             return Err(ValidationError::EmptyField("name".to_string()));
         }
 
-        if name.len() > 1000 {
+        if name.len() > limits::FOLDER_NAME_MAX_LEN {
             return Err(ValidationError::FieldTooLong {
                 field: "name".to_string(),
-                max: 1000,
+                max: limits::FOLDER_NAME_MAX_LEN,
                 actual: name.len(),
             });
         }
@@ -92,10 +106,10 @@ impl ValidationService {
         // Validate URIs
         for uri_view in &login.uris {
             if let Some(uri_str) = &uri_view.uri {
-                if uri_str.len() > 10000 {
+                if uri_str.len() > limits::CIPHER_URI_MAX_LEN {
                     return Err(ValidationError::FieldTooLong {
                         field: "uri".to_string(),
-                        max: 10000,
+                        max: limits::CIPHER_URI_MAX_LEN,
                         actual: uri_str.len(),
                     });
                 }
@@ -142,20 +156,20 @@ impl ValidationService {
 
     fn validate_field_lengths(&self, cipher: &CipherView) -> Result<(), ValidationError> {
         // Name: max 1000 chars
-        if cipher.name.len() > 1000 {
+        if cipher.name.len() > limits::CIPHER_NAME_MAX_LEN {
             return Err(ValidationError::FieldTooLong {
                 field: "name".to_string(),
-                max: 1000,
+                max: limits::CIPHER_NAME_MAX_LEN,
                 actual: cipher.name.len(),
             });
         }
 
         // Notes: max 10000 chars
         if let Some(notes) = &cipher.notes {
-            if notes.len() > 10000 {
+            if notes.len() > limits::CIPHER_NOTES_MAX_LEN {
                 return Err(ValidationError::FieldTooLong {
                     field: "notes".to_string(),
-                    max: 10000,
+                    max: limits::CIPHER_NOTES_MAX_LEN,
                     actual: notes.len(),
                 });
             }

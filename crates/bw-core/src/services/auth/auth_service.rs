@@ -7,7 +7,7 @@ use crate::models::{
     state::{KdfConfig, KdfType},
 };
 use crate::services::{
-    api::{ApiClient, BitwardenApiClient},
+    api::{endpoints, ApiClient, BitwardenApiClient},
     auth::{errors::AuthError, session_manager::SessionManager},
     crypto,
     storage::{
@@ -72,7 +72,7 @@ impl AuthService {
         two_factor: Option<TwoFactorData>,
         new_device_otp: Option<String>,
     ) -> Result<LoginResult, AuthError> {
-        info!("Starting password login for: {}", email);
+        info!("Starting password login");
 
         // Step 1: Get KDF configuration from server
         debug!("Fetching KDF configuration");
@@ -150,7 +150,7 @@ impl AuthService {
         )
         .await?;
 
-        info!("Login successful for: {}", email);
+        info!("Login successful");
 
         Ok(LoginResult {
             user_id: profile.id,
@@ -191,7 +191,7 @@ impl AuthService {
         // Authenticate with server (no Auth-Email header for API key login)
         let login_response: LoginResponse = self
             .api_client
-            .post_form("/identity/connect/token", &request, None)
+            .post_form(endpoints::identity::TOKEN, &request, None)
             .await
             .map_err(|e| AuthError::InvalidCredentials {
                 message: format!("API key authentication failed: {}", e),
@@ -395,7 +395,7 @@ impl AuthService {
 
         let response: PreloginResponse = self
             .api_client
-            .post("/identity/accounts/prelogin", &request)
+            .post(endpoints::identity::PRELOGIN, &request)
             .await
             .map_err(|e| AuthError::KdfError {
                 message: format!("Failed to fetch KDF config: {}", e),
@@ -510,19 +510,16 @@ impl AuthService {
             ("Device-Type", device_type_str.clone()),
         ];
 
-        // Debug: log what we're sending
+        // Debug: log non-sensitive request metadata
         debug!(
-            "Login request: email={}, password_hash={}, device_type={}, device_name={}, device_id={}, auth_email_header={}",
-            email,
-            hashed_password,
+            "Login request: device_type={}, device_name={}, device_id={}",
             device_info.device_type,
             device_info.device_name,
             device_info.device_identifier,
-            auth_email
         );
 
         self.api_client
-            .post_form("/identity/connect/token", &request, Some(extra_headers))
+            .post_form(endpoints::identity::TOKEN, &request, Some(extra_headers))
             .await
             .map_err(|e| {
                 let error_str = e.to_string().to_lowercase();
@@ -544,7 +541,7 @@ impl AuthService {
         // Note: path is relative to api_url (https://api.bitwarden.com), so no /api prefix
         let profile: ProfileResponse = self
             .api_client
-            .get_authenticated("/accounts/profile", access_token)
+            .get_authenticated(endpoints::api::PROFILE, access_token)
             .await
             .map_err(|e| AuthError::Api(e.into()))?;
 

@@ -38,51 +38,53 @@ impl CipherService {
             folder_id: cipher.folder_id.clone(),
             cipher_type: cipher.cipher_type,
             name: self.decrypt_string(&cipher.name, user_key)?,
-            notes: if let Some(notes) = &cipher.notes {
-                Some(self.decrypt_string(notes, user_key)?)
-            } else {
-                None
-            },
+            notes: self.decrypt_optional(&cipher.notes, user_key)?,
             favorite: cipher.favorite,
             collection_ids: cipher.collection_ids.clone(),
             revision_date: cipher.revision_date.clone(),
             creation_date: cipher.creation_date.clone(),
             deleted_date: cipher.deleted_date.clone(),
-            login: if let Some(login) = &cipher.login {
-                Some(self.decrypt_login(login, user_key)?)
-            } else {
-                None
-            },
+            login: cipher
+                .login
+                .as_ref()
+                .map(|l| self.decrypt_login(l, user_key))
+                .transpose()?,
             secure_note: cipher.secure_note.clone(),
-            card: if let Some(card) = &cipher.card {
-                Some(self.decrypt_card(card, user_key)?)
-            } else {
-                None
-            },
-            identity: if let Some(identity) = &cipher.identity {
-                Some(self.decrypt_identity(identity, user_key)?)
-            } else {
-                None
-            },
+            card: cipher
+                .card
+                .as_ref()
+                .map(|c| self.decrypt_card(c, user_key))
+                .transpose()?,
+            identity: cipher
+                .identity
+                .as_ref()
+                .map(|i| self.decrypt_identity(i, user_key))
+                .transpose()?,
             attachments: cipher.attachments.clone().unwrap_or_default(),
-            fields: {
-                let mut fields = Vec::new();
-                if let Some(cipher_fields) = &cipher.fields {
-                    for field in cipher_fields {
-                        fields.push(CipherFieldView {
-                            name: self.decrypt_string(&field.name, user_key)?,
-                            value: if let Some(v) = &field.value {
-                                Some(self.decrypt_string(v, user_key)?)
-                            } else {
-                                None
-                            },
-                            field_type: field.field_type,
-                        });
-                    }
-                }
-                fields
-            },
+            fields: self.decrypt_fields(&cipher.fields, user_key)?,
         })
+    }
+
+    /// Decrypt fields list
+    fn decrypt_fields(
+        &self,
+        fields: &Option<Vec<CipherField>>,
+        key: &SymmetricCryptoKey,
+    ) -> Result<Vec<CipherFieldView>, VaultError> {
+        let Some(cipher_fields) = fields else {
+            return Ok(Vec::new());
+        };
+
+        cipher_fields
+            .iter()
+            .map(|field| {
+                Ok(CipherFieldView {
+                    name: self.decrypt_string(&field.name, key)?,
+                    value: self.decrypt_optional(&field.value, key)?,
+                    field_type: field.field_type,
+                })
+            })
+            .collect()
     }
 
     /// Decrypt multiple ciphers using the provided user key
@@ -142,6 +144,32 @@ impl CipherService {
 
     // Private helper methods for decryption
 
+    /// Decrypt an optional encrypted string using the user key
+    ///
+    /// Returns Ok(None) if input is None, Ok(Some(decrypted)) if successful
+    fn decrypt_optional(
+        &self,
+        val: &Option<String>,
+        key: &SymmetricCryptoKey,
+    ) -> Result<Option<String>, VaultError> {
+        val.as_ref()
+            .map(|v| self.decrypt_string(v, key))
+            .transpose()
+    }
+
+    /// Encrypt an optional string using the user key
+    ///
+    /// Returns Ok(None) if input is None, Ok(Some(encrypted)) if successful
+    fn encrypt_optional(
+        &self,
+        val: &Option<String>,
+        key: &SymmetricCryptoKey,
+    ) -> Result<Option<String>, VaultError> {
+        val.as_ref()
+            .map(|v| self.encrypt_string(v, key))
+            .transpose()
+    }
+
     /// Decrypt an encrypted string using the user key
     fn decrypt_string(
         &self,
@@ -167,36 +195,22 @@ impl CipherService {
         login: &CipherLogin,
         key: &SymmetricCryptoKey,
     ) -> Result<CipherLoginView, VaultError> {
+        let uris = login
+            .uris
+            .iter()
+            .map(|uri| {
+                Ok(CipherLoginUriView {
+                    uri: self.decrypt_optional(&uri.uri, key)?,
+                    match_type: uri.match_type,
+                })
+            })
+            .collect::<Result<Vec<_>, VaultError>>()?;
+
         Ok(CipherLoginView {
-            username: if let Some(u) = &login.username {
-                Some(self.decrypt_string(u, key)?)
-            } else {
-                None
-            },
-            password: if let Some(p) = &login.password {
-                Some(self.decrypt_string(p, key)?)
-            } else {
-                None
-            },
-            uris: {
-                let mut uris = Vec::new();
-                for uri in &login.uris {
-                    uris.push(CipherLoginUriView {
-                        uri: if let Some(u) = &uri.uri {
-                            Some(self.decrypt_string(u, key)?)
-                        } else {
-                            None
-                        },
-                        match_type: uri.match_type,
-                    });
-                }
-                uris
-            },
-            totp: if let Some(t) = &login.totp {
-                Some(self.decrypt_string(t, key)?)
-            } else {
-                None
-            },
+            username: self.decrypt_optional(&login.username, key)?,
+            password: self.decrypt_optional(&login.password, key)?,
+            uris,
+            totp: self.decrypt_optional(&login.totp, key)?,
         })
     }
 
@@ -206,36 +220,12 @@ impl CipherService {
         key: &SymmetricCryptoKey,
     ) -> Result<CipherCardView, VaultError> {
         Ok(CipherCardView {
-            cardholder_name: if let Some(n) = &card.cardholder_name {
-                Some(self.decrypt_string(n, key)?)
-            } else {
-                None
-            },
-            number: if let Some(n) = &card.number {
-                Some(self.decrypt_string(n, key)?)
-            } else {
-                None
-            },
-            brand: if let Some(b) = &card.brand {
-                Some(self.decrypt_string(b, key)?)
-            } else {
-                None
-            },
-            exp_month: if let Some(m) = &card.exp_month {
-                Some(self.decrypt_string(m, key)?)
-            } else {
-                None
-            },
-            exp_year: if let Some(y) = &card.exp_year {
-                Some(self.decrypt_string(y, key)?)
-            } else {
-                None
-            },
-            code: if let Some(c) = &card.code {
-                Some(self.decrypt_string(c, key)?)
-            } else {
-                None
-            },
+            cardholder_name: self.decrypt_optional(&card.cardholder_name, key)?,
+            number: self.decrypt_optional(&card.number, key)?,
+            brand: self.decrypt_optional(&card.brand, key)?,
+            exp_month: self.decrypt_optional(&card.exp_month, key)?,
+            exp_year: self.decrypt_optional(&card.exp_year, key)?,
+            code: self.decrypt_optional(&card.code, key)?,
         })
     }
 
@@ -245,91 +235,23 @@ impl CipherService {
         key: &SymmetricCryptoKey,
     ) -> Result<CipherIdentityView, VaultError> {
         Ok(CipherIdentityView {
-            title: if let Some(t) = &identity.title {
-                Some(self.decrypt_string(t, key)?)
-            } else {
-                None
-            },
-            first_name: if let Some(f) = &identity.first_name {
-                Some(self.decrypt_string(f, key)?)
-            } else {
-                None
-            },
-            middle_name: if let Some(m) = &identity.middle_name {
-                Some(self.decrypt_string(m, key)?)
-            } else {
-                None
-            },
-            last_name: if let Some(l) = &identity.last_name {
-                Some(self.decrypt_string(l, key)?)
-            } else {
-                None
-            },
-            address1: if let Some(a) = &identity.address1 {
-                Some(self.decrypt_string(a, key)?)
-            } else {
-                None
-            },
-            address2: if let Some(a) = &identity.address2 {
-                Some(self.decrypt_string(a, key)?)
-            } else {
-                None
-            },
-            address3: if let Some(a) = &identity.address3 {
-                Some(self.decrypt_string(a, key)?)
-            } else {
-                None
-            },
-            city: if let Some(c) = &identity.city {
-                Some(self.decrypt_string(c, key)?)
-            } else {
-                None
-            },
-            state: if let Some(s) = &identity.state {
-                Some(self.decrypt_string(s, key)?)
-            } else {
-                None
-            },
-            postal_code: if let Some(p) = &identity.postal_code {
-                Some(self.decrypt_string(p, key)?)
-            } else {
-                None
-            },
-            country: if let Some(c) = &identity.country {
-                Some(self.decrypt_string(c, key)?)
-            } else {
-                None
-            },
-            phone: if let Some(p) = &identity.phone {
-                Some(self.decrypt_string(p, key)?)
-            } else {
-                None
-            },
-            email: if let Some(e) = &identity.email {
-                Some(self.decrypt_string(e, key)?)
-            } else {
-                None
-            },
-            ssn: if let Some(s) = &identity.ssn {
-                Some(self.decrypt_string(s, key)?)
-            } else {
-                None
-            },
-            username: if let Some(u) = &identity.username {
-                Some(self.decrypt_string(u, key)?)
-            } else {
-                None
-            },
-            passport_number: if let Some(p) = &identity.passport_number {
-                Some(self.decrypt_string(p, key)?)
-            } else {
-                None
-            },
-            license_number: if let Some(l) = &identity.license_number {
-                Some(self.decrypt_string(l, key)?)
-            } else {
-                None
-            },
+            title: self.decrypt_optional(&identity.title, key)?,
+            first_name: self.decrypt_optional(&identity.first_name, key)?,
+            middle_name: self.decrypt_optional(&identity.middle_name, key)?,
+            last_name: self.decrypt_optional(&identity.last_name, key)?,
+            address1: self.decrypt_optional(&identity.address1, key)?,
+            address2: self.decrypt_optional(&identity.address2, key)?,
+            address3: self.decrypt_optional(&identity.address3, key)?,
+            city: self.decrypt_optional(&identity.city, key)?,
+            state: self.decrypt_optional(&identity.state, key)?,
+            postal_code: self.decrypt_optional(&identity.postal_code, key)?,
+            country: self.decrypt_optional(&identity.country, key)?,
+            phone: self.decrypt_optional(&identity.phone, key)?,
+            email: self.decrypt_optional(&identity.email, key)?,
+            ssn: self.decrypt_optional(&identity.ssn, key)?,
+            username: self.decrypt_optional(&identity.username, key)?,
+            passport_number: self.decrypt_optional(&identity.passport_number, key)?,
+            license_number: self.decrypt_optional(&identity.license_number, key)?,
         })
     }
 
@@ -341,44 +263,14 @@ impl CipherService {
         cipher_view: &CipherView,
         user_key: &SymmetricCryptoKey,
     ) -> Result<Cipher, VaultError> {
-        let encrypted_name = self.encrypt_string(&cipher_view.name, user_key)?;
-
-        let encrypted_notes = if let Some(notes) = &cipher_view.notes {
-            Some(self.encrypt_string(notes, user_key)?)
-        } else {
-            None
-        };
-
-        let encrypted_login = if let Some(login) = &cipher_view.login {
-            Some(self.encrypt_login(login, user_key)?)
-        } else {
-            None
-        };
-
-        let encrypted_secure_note = cipher_view.secure_note.clone();
-
-        let encrypted_card = if let Some(card) = &cipher_view.card {
-            Some(self.encrypt_card(card, user_key)?)
-        } else {
-            None
-        };
-
-        let encrypted_identity = if let Some(identity) = &cipher_view.identity {
-            Some(self.encrypt_identity(identity, user_key)?)
-        } else {
-            None
-        };
-
-        let encrypted_fields = self.encrypt_fields(&cipher_view.fields, user_key)?;
-
         // Build encrypted cipher
         Ok(Cipher {
             id: cipher_view.id.clone(),
             organization_id: cipher_view.organization_id.clone(),
             folder_id: cipher_view.folder_id.clone(),
             cipher_type: cipher_view.cipher_type,
-            name: encrypted_name,
-            notes: encrypted_notes,
+            name: self.encrypt_string(&cipher_view.name, user_key)?,
+            notes: self.encrypt_optional(&cipher_view.notes, user_key)?,
             favorite: cipher_view.favorite,
             edit: true,
             view_password: true,
@@ -387,13 +279,25 @@ impl CipherService {
             revision_date: cipher_view.revision_date.clone(),
             creation_date: cipher_view.creation_date.clone(),
             deleted_date: cipher_view.deleted_date.clone(),
-            login: encrypted_login,
-            secure_note: encrypted_secure_note,
-            card: encrypted_card,
-            identity: encrypted_identity,
+            login: cipher_view
+                .login
+                .as_ref()
+                .map(|l| self.encrypt_login(l, user_key))
+                .transpose()?,
+            secure_note: cipher_view.secure_note.clone(),
+            card: cipher_view
+                .card
+                .as_ref()
+                .map(|c| self.encrypt_card(c, user_key))
+                .transpose()?,
+            identity: cipher_view
+                .identity
+                .as_ref()
+                .map(|i| self.encrypt_identity(i, user_key))
+                .transpose()?,
             ssh_key: None,
             attachments: Some(cipher_view.attachments.clone()),
-            fields: Some(encrypted_fields),
+            fields: Some(self.encrypt_fields(&cipher_view.fields, user_key)?),
             password_history: None,
             organization_use_totp: false,
             reprompt: 0,
@@ -428,60 +332,27 @@ impl CipherService {
         login: &CipherLoginView,
         key: &SymmetricCryptoKey,
     ) -> Result<CipherLogin, VaultError> {
-        let encrypted_username = if let Some(username) = &login.username {
-            Some(self.encrypt_string(username, key)?)
-        } else {
-            None
-        };
-
-        let encrypted_password = if let Some(password) = &login.password {
-            Some(self.encrypt_string(password, key)?)
-        } else {
-            None
-        };
-
-        let encrypted_totp = if let Some(totp) = &login.totp {
-            Some(self.encrypt_string(totp, key)?)
-        } else {
-            None
-        };
-
-        let encrypted_uris = self.encrypt_uris(&login.uris, key)?;
+        let encrypted_uris = login
+            .uris
+            .iter()
+            .map(|uri| {
+                Ok(CipherLoginUri {
+                    uri: self.encrypt_optional(&uri.uri, key)?,
+                    match_type: uri.match_type,
+                })
+            })
+            .collect::<Result<Vec<_>, VaultError>>()?;
 
         Ok(CipherLogin {
-            username: encrypted_username,
-            password: encrypted_password,
-            totp: encrypted_totp,
+            username: self.encrypt_optional(&login.username, key)?,
+            password: self.encrypt_optional(&login.password, key)?,
+            totp: self.encrypt_optional(&login.totp, key)?,
             uris: encrypted_uris,
             uri: None,
             autofill_on_page_load: None,
             password_revision_date: None,
             fido2_credentials: None,
         })
-    }
-
-    /// Encrypt URI list
-    fn encrypt_uris(
-        &self,
-        uris: &[CipherLoginUriView],
-        key: &SymmetricCryptoKey,
-    ) -> Result<Vec<CipherLoginUri>, VaultError> {
-        let mut encrypted_uris = Vec::new();
-
-        for uri_view in uris {
-            let encrypted_uri = if let Some(uri) = &uri_view.uri {
-                Some(self.encrypt_string(uri, key)?)
-            } else {
-                None
-            };
-
-            encrypted_uris.push(CipherLoginUri {
-                uri: encrypted_uri,
-                match_type: uri_view.match_type,
-            });
-        }
-
-        Ok(encrypted_uris)
     }
 
     /// Encrypt card data
@@ -491,36 +362,12 @@ impl CipherService {
         key: &SymmetricCryptoKey,
     ) -> Result<CipherCard, VaultError> {
         Ok(CipherCard {
-            cardholder_name: if let Some(n) = &card.cardholder_name {
-                Some(self.encrypt_string(n, key)?)
-            } else {
-                None
-            },
-            number: if let Some(n) = &card.number {
-                Some(self.encrypt_string(n, key)?)
-            } else {
-                None
-            },
-            brand: if let Some(b) = &card.brand {
-                Some(self.encrypt_string(b, key)?)
-            } else {
-                None
-            },
-            exp_month: if let Some(m) = &card.exp_month {
-                Some(self.encrypt_string(m, key)?)
-            } else {
-                None
-            },
-            exp_year: if let Some(y) = &card.exp_year {
-                Some(self.encrypt_string(y, key)?)
-            } else {
-                None
-            },
-            code: if let Some(c) = &card.code {
-                Some(self.encrypt_string(c, key)?)
-            } else {
-                None
-            },
+            cardholder_name: self.encrypt_optional(&card.cardholder_name, key)?,
+            number: self.encrypt_optional(&card.number, key)?,
+            brand: self.encrypt_optional(&card.brand, key)?,
+            exp_month: self.encrypt_optional(&card.exp_month, key)?,
+            exp_year: self.encrypt_optional(&card.exp_year, key)?,
+            code: self.encrypt_optional(&card.code, key)?,
         })
     }
 
@@ -531,91 +378,23 @@ impl CipherService {
         key: &SymmetricCryptoKey,
     ) -> Result<CipherIdentity, VaultError> {
         Ok(CipherIdentity {
-            title: if let Some(t) = &identity.title {
-                Some(self.encrypt_string(t, key)?)
-            } else {
-                None
-            },
-            first_name: if let Some(f) = &identity.first_name {
-                Some(self.encrypt_string(f, key)?)
-            } else {
-                None
-            },
-            middle_name: if let Some(m) = &identity.middle_name {
-                Some(self.encrypt_string(m, key)?)
-            } else {
-                None
-            },
-            last_name: if let Some(l) = &identity.last_name {
-                Some(self.encrypt_string(l, key)?)
-            } else {
-                None
-            },
-            address1: if let Some(a) = &identity.address1 {
-                Some(self.encrypt_string(a, key)?)
-            } else {
-                None
-            },
-            address2: if let Some(a) = &identity.address2 {
-                Some(self.encrypt_string(a, key)?)
-            } else {
-                None
-            },
-            address3: if let Some(a) = &identity.address3 {
-                Some(self.encrypt_string(a, key)?)
-            } else {
-                None
-            },
-            city: if let Some(c) = &identity.city {
-                Some(self.encrypt_string(c, key)?)
-            } else {
-                None
-            },
-            state: if let Some(s) = &identity.state {
-                Some(self.encrypt_string(s, key)?)
-            } else {
-                None
-            },
-            postal_code: if let Some(p) = &identity.postal_code {
-                Some(self.encrypt_string(p, key)?)
-            } else {
-                None
-            },
-            country: if let Some(c) = &identity.country {
-                Some(self.encrypt_string(c, key)?)
-            } else {
-                None
-            },
-            phone: if let Some(p) = &identity.phone {
-                Some(self.encrypt_string(p, key)?)
-            } else {
-                None
-            },
-            email: if let Some(e) = &identity.email {
-                Some(self.encrypt_string(e, key)?)
-            } else {
-                None
-            },
-            ssn: if let Some(s) = &identity.ssn {
-                Some(self.encrypt_string(s, key)?)
-            } else {
-                None
-            },
-            username: if let Some(u) = &identity.username {
-                Some(self.encrypt_string(u, key)?)
-            } else {
-                None
-            },
-            passport_number: if let Some(p) = &identity.passport_number {
-                Some(self.encrypt_string(p, key)?)
-            } else {
-                None
-            },
-            license_number: if let Some(l) = &identity.license_number {
-                Some(self.encrypt_string(l, key)?)
-            } else {
-                None
-            },
+            title: self.encrypt_optional(&identity.title, key)?,
+            first_name: self.encrypt_optional(&identity.first_name, key)?,
+            middle_name: self.encrypt_optional(&identity.middle_name, key)?,
+            last_name: self.encrypt_optional(&identity.last_name, key)?,
+            address1: self.encrypt_optional(&identity.address1, key)?,
+            address2: self.encrypt_optional(&identity.address2, key)?,
+            address3: self.encrypt_optional(&identity.address3, key)?,
+            city: self.encrypt_optional(&identity.city, key)?,
+            state: self.encrypt_optional(&identity.state, key)?,
+            postal_code: self.encrypt_optional(&identity.postal_code, key)?,
+            country: self.encrypt_optional(&identity.country, key)?,
+            phone: self.encrypt_optional(&identity.phone, key)?,
+            email: self.encrypt_optional(&identity.email, key)?,
+            ssn: self.encrypt_optional(&identity.ssn, key)?,
+            username: self.encrypt_optional(&identity.username, key)?,
+            passport_number: self.encrypt_optional(&identity.passport_number, key)?,
+            license_number: self.encrypt_optional(&identity.license_number, key)?,
         })
     }
 
@@ -625,20 +404,15 @@ impl CipherService {
         fields: &[CipherFieldView],
         key: &SymmetricCryptoKey,
     ) -> Result<Vec<CipherField>, VaultError> {
-        let mut encrypted_fields = Vec::new();
-
-        for field_view in fields {
-            encrypted_fields.push(CipherField {
-                name: self.encrypt_string(&field_view.name, key)?,
-                value: if let Some(v) = &field_view.value {
-                    Some(self.encrypt_string(v, key)?)
-                } else {
-                    None
-                },
-                field_type: field_view.field_type,
-            });
-        }
-
-        Ok(encrypted_fields)
+        fields
+            .iter()
+            .map(|field_view| {
+                Ok(CipherField {
+                    name: self.encrypt_string(&field_view.name, key)?,
+                    value: self.encrypt_optional(&field_view.value, key)?,
+                    field_type: field_view.field_type,
+                })
+            })
+            .collect()
     }
 }

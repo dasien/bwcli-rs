@@ -53,4 +53,7 @@ pub enum StorageError {
 
     #[error("Account not found: {user_id}")]
     AccountNotFound { user_id: String },
+
+    #[error("Failed to acquire storage lock: {0}")]
+    LockError(String),
 }

@@ -1,5 +1,6 @@
 //! Bitwarden CSV import parser
 
+use super::non_empty;
 use crate::services::import_export::errors::ImportError;
 use crate::services::import_export::import::*;
 use async_trait::async_trait;
@@ -97,27 +98,9 @@ impl ImportParser for BitwardenCsvParser {
                     .collect();
 
                 Some(ImportLogin {
-                    username: record.get(8).and_then(|s| {
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s.to_string())
-                        }
-                    }),
-                    password: record.get(9).and_then(|s| {
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s.to_string())
-                        }
-                    }),
-                    totp: record.get(10).and_then(|s| {
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s.to_string())
-                        }
-                    }),
+                    username: record.get(8).and_then(|s| non_empty(s)),
+                    password: record.get(9).and_then(|s| non_empty(s)),
+                    totp: record.get(10).and_then(|s| non_empty(s)),
                     uris,
                 })
             } else {
