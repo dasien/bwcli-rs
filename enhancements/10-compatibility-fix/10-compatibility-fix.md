@@ -198,7 +198,7 @@ Enhancements 01, 02, and 03 specified "compatibility with TypeScript CLI" but:
 > Testing and validation guidance
 
 - **Primary focus:** Cross-CLI compatibility testing
-- Test with real Bitwarden account (test account: genbwtest@gmail.com)
+- Test with real Bitwarden account
 - Verify data.json format byte-for-byte compatible where possible
 - Test error handling for older state versions
 - Verify no data loss when Rust CLI writes to existing data.json

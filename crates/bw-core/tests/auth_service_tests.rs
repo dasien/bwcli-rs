@@ -2,13 +2,14 @@
 //!
 //! Tests the authentication service with mock HTTP server and real storage
 
-use bw_core::models::state::{KdfConfig, UserProfile};
 use bw_core::services::{
     api::{BitwardenApiClient, Environment},
     auth::{AuthError, AuthService},
-    storage::{JsonFileStorage, Storage},
+    storage::{JsonFileStorage, Storage, StorageKey},
 };
+use bitwarden_crypto::{Kdf, MasterKey};
 use secrecy::Secret;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::sync::Mutex;
@@ -16,6 +17,24 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{body_string_contains, method, path},
 };
+
+/// Test credentials - these are only used in tests, not real credentials
+const TEST_EMAIL: &str = "test@example.com";
+const TEST_PASSWORD: &str = "test_password";
+const TEST_KDF_ITERATIONS: u32 = 600000;
+
+/// Generate a valid encrypted user key for testing
+///
+/// This creates a real encrypted user key that can be decrypted with the
+/// given password/email/KDF combination.
+fn generate_test_encrypted_user_key(password: &str, email: &str, iterations: u32) -> String {
+    let kdf = Kdf::PBKDF2 {
+        iterations: NonZeroU32::new(iterations).unwrap(),
+    };
+    let master_key = MasterKey::derive(password, email, &kdf).expect("Failed to derive master key");
+    let (_user_key, encrypted_user_key) = master_key.make_user_key().expect("Failed to make user key");
+    encrypted_user_key.to_string()
+}
 
 /// Helper to create test auth service with temp storage and mock API
 /// Returns the TempDir to keep it alive for the duration of the test
@@ -42,19 +61,16 @@ async fn setup_test_auth_service(
     (auth_service, storage, temp_dir)
 }
 
-#[tokio::test]
-async fn test_login_with_password_success() {
-    // Setup mock server
-    let mock_server = MockServer::start().await;
-
+/// Setup standard mocks for password login tests
+async fn setup_login_mocks(mock_server: &MockServer, encrypted_user_key: &str) {
     // Mock prelogin response (KDF config)
     Mock::given(method("POST"))
         .and(path("/identity/accounts/prelogin"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "kdf": 0,
-            "kdfIterations": 600000,
+            "kdfIterations": TEST_KDF_ITERATIONS,
         })))
-        .mount(&mock_server)
+        .mount(mock_server)
         .await;
 
     // Mock login response
@@ -66,12 +82,12 @@ async fn test_login_with_password_success() {
             "expires_in": 3600,
             "token_type": "Bearer",
             "refresh_token": "test_refresh_token",
-            "Key": "mock_encrypted_user_key",
+            "Key": encrypted_user_key,
             "Kdf": 0,
-            "KdfIterations": 600000,
+            "KdfIterations": TEST_KDF_ITERATIONS,
             "ResetMasterPassword": false,
         })))
-        .mount(&mock_server)
+        .mount(mock_server)
         .await;
 
     // Mock profile response
@@ -80,13 +96,23 @@ async fn test_login_with_password_success() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "id": "user_id_123",
             "name": "Test User",
-            "email": "test@example.com",
+            "email": TEST_EMAIL,
             "emailVerified": true,
             "premium": false,
             "securityStamp": "security_stamp_123",
         })))
-        .mount(&mock_server)
+        .mount(mock_server)
         .await;
+}
+
+#[tokio::test]
+async fn test_login_with_password_success() {
+    // Generate a valid encrypted user key for our test credentials
+    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+
+    // Setup mock server
+    let mock_server = MockServer::start().await;
+    setup_login_mocks(&mock_server, &encrypted_user_key).await;
 
     // Create test service
     let (auth_service, storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
@@ -94,8 +120,9 @@ async fn test_login_with_password_success() {
     // Execute login
     let result = auth_service
         .login_with_password(
-            "test@example.com",
-            Secret::new("test_password".to_string()),
+            TEST_EMAIL,
+            Secret::new(TEST_PASSWORD.to_string()),
+            None,
             None,
         )
         .await;
@@ -103,18 +130,22 @@ async fn test_login_with_password_success() {
     // Verify success
     assert!(result.is_ok(), "Login should succeed: {:?}", result.err());
     let login_result = result.unwrap();
-    assert_eq!(login_result.email, "test@example.com");
+    assert_eq!(login_result.email, TEST_EMAIL);
     assert_eq!(login_result.user_id, "user_id_123");
     assert!(!login_result.session_key.is_empty());
 
-    // Verify storage persistence
+    // Verify storage persistence - check namespaced keys
     let storage = storage.lock().await;
-    let user_profile: Option<UserProfile> = storage.get("userProfile").unwrap();
-    assert!(user_profile.is_some());
-    assert_eq!(user_profile.unwrap().email, "test@example.com");
 
-    let kdf_config: Option<KdfConfig> = storage.get("kdfConfig").unwrap();
-    assert!(kdf_config.is_some());
+    // Check access token is stored with namespaced key
+    let access_token_key = StorageKey::UserAccessToken.format(Some("user_id_123"));
+    let access_token: Option<String> = storage.get(&access_token_key).unwrap();
+    assert!(access_token.is_some(), "Access token should be stored");
+
+    // Check KDF config is stored with namespaced key
+    let kdf_key = StorageKey::UserKdfConfig.format(Some("user_id_123"));
+    let kdf_config: Option<serde_json::Value> = storage.get(&kdf_key).unwrap();
+    assert!(kdf_config.is_some(), "KDF config should be stored");
 }
 
 #[tokio::test]
@@ -126,7 +157,7 @@ async fn test_login_with_password_invalid_credentials() {
         .and(path("/identity/accounts/prelogin"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "kdf": 0,
-            "kdfIterations": 600000,
+            "kdfIterations": TEST_KDF_ITERATIONS,
         })))
         .mount(&mock_server)
         .await;
@@ -146,8 +177,9 @@ async fn test_login_with_password_invalid_credentials() {
     // Execute login with wrong password
     let result = auth_service
         .login_with_password(
-            "test@example.com",
+            TEST_EMAIL,
             Secret::new("wrong_password".to_string()),
+            None,
             None,
         )
         .await;
@@ -166,7 +198,7 @@ async fn test_login_with_password_invalid_credentials() {
 async fn test_login_with_api_key_success() {
     let mock_server = MockServer::start().await;
 
-    // Mock API key login response
+    // Mock API key login response (no Key field - API key login doesn't return encrypted user key)
     Mock::given(method("POST"))
         .and(path("/identity/connect/token"))
         .and(body_string_contains("grant_type=client_credentials"))
@@ -176,7 +208,7 @@ async fn test_login_with_api_key_success() {
             "token_type": "Bearer",
             "refresh_token": "api_key_refresh_token",
             "Kdf": 0,
-            "KdfIterations": 600000,
+            "KdfIterations": TEST_KDF_ITERATIONS,
             "ResetMasterPassword": false,
         })))
         .mount(&mock_server)
@@ -220,55 +252,20 @@ async fn test_login_with_api_key_success() {
 
 #[tokio::test]
 async fn test_unlock_success() {
-    // This test requires a logged-in state first
+    // Generate a valid encrypted user key for our test credentials
+    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+
     let mock_server = MockServer::start().await;
-
-    // Setup mocks for initial login
-    Mock::given(method("POST"))
-        .and(path("/identity/accounts/prelogin"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "kdf": 0,
-            "kdfIterations": 600000,
-        })))
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("POST"))
-        .and(path("/identity/connect/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token": "access_token",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-            "refresh_token": "refresh_token",
-            "Key": "mock_encrypted_user_key",
-            "Kdf": 0,
-            "KdfIterations": 600000,
-            "ResetMasterPassword": false,
-        })))
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("GET"))
-        .and(path("/api/accounts/profile"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id": "user_id",
-            "name": "Test User",
-            "email": "test@example.com",
-            "emailVerified": true,
-            "premium": false,
-            "securityStamp": "stamp",
-        })))
-        .mount(&mock_server)
-        .await;
+    setup_login_mocks(&mock_server, &encrypted_user_key).await;
 
     let (auth_service, _storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
     // First login
-    let password = Secret::new("test_password".to_string());
+    let password = Secret::new(TEST_PASSWORD.to_string());
     let login_result = auth_service
-        .login_with_password("test@example.com", password.clone(), None)
+        .login_with_password(TEST_EMAIL, password.clone(), None, None)
         .await;
-    assert!(login_result.is_ok());
+    assert!(login_result.is_ok(), "Login should succeed: {:?}", login_result.err());
 
     // Now test unlock with the same password
     let unlock_result = auth_service.unlock(password).await;
@@ -305,57 +302,24 @@ async fn test_unlock_not_logged_in() {
 
 #[tokio::test]
 async fn test_unlock_wrong_password() {
+    // Generate encrypted user key with the correct password
+    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+
     let mock_server = MockServer::start().await;
-
-    // Setup mocks for initial login
-    Mock::given(method("POST"))
-        .and(path("/identity/accounts/prelogin"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "kdf": 0,
-            "kdfIterations": 600000,
-        })))
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("POST"))
-        .and(path("/identity/connect/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token": "access_token",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-            "refresh_token": "refresh_token",
-            "Key": "mock_encrypted_user_key",
-            "Kdf": 0,
-            "KdfIterations": 600000,
-            "ResetMasterPassword": false,
-        })))
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("GET"))
-        .and(path("/api/accounts/profile"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id": "user_id",
-            "name": "Test User",
-            "email": "test@example.com",
-            "emailVerified": true,
-            "premium": false,
-            "securityStamp": "stamp",
-        })))
-        .mount(&mock_server)
-        .await;
+    setup_login_mocks(&mock_server, &encrypted_user_key).await;
 
     let (auth_service, _storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
     // Login with correct password
     let login_result = auth_service
         .login_with_password(
-            "test@example.com",
-            Secret::new("correct_password".to_string()),
+            TEST_EMAIL,
+            Secret::new(TEST_PASSWORD.to_string()),
+            None,
             None,
         )
         .await;
-    assert!(login_result.is_ok());
+    assert!(login_result.is_ok(), "Login should succeed: {:?}", login_result.err());
 
     // Try to unlock with wrong password
     let unlock_result = auth_service
@@ -374,142 +338,96 @@ async fn test_unlock_wrong_password() {
 
 #[tokio::test]
 async fn test_lock() {
+    // Generate a valid encrypted user key for our test credentials
+    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+
     let mock_server = MockServer::start().await;
+    setup_login_mocks(&mock_server, &encrypted_user_key).await;
+
     let (auth_service, _storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
-    // Lock always succeeds (it's just clearing session state)
+    // Login first (lock requires being logged in)
+    let login_result = auth_service
+        .login_with_password(
+            TEST_EMAIL,
+            Secret::new(TEST_PASSWORD.to_string()),
+            None,
+            None,
+        )
+        .await;
+    assert!(login_result.is_ok(), "Login should succeed: {:?}", login_result.err());
+
+    // Lock should succeed
     let result = auth_service.lock().await;
-    assert!(result.is_ok());
+    assert!(result.is_ok(), "Lock should succeed: {:?}", result.err());
 }
 
 #[tokio::test]
 async fn test_logout_success() {
+    // Generate a valid encrypted user key for our test credentials
+    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+
     let mock_server = MockServer::start().await;
-
-    // Setup mocks for login
-    Mock::given(method("POST"))
-        .and(path("/identity/accounts/prelogin"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "kdf": 0,
-            "kdfIterations": 600000,
-        })))
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("POST"))
-        .and(path("/identity/connect/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token": "access_token",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-            "refresh_token": "refresh_token",
-            "Key": "mock_encrypted_user_key",
-            "Kdf": 0,
-            "KdfIterations": 600000,
-            "ResetMasterPassword": false,
-        })))
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("GET"))
-        .and(path("/api/accounts/profile"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id": "user_id",
-            "name": "Test User",
-            "email": "test@example.com",
-            "emailVerified": true,
-            "premium": false,
-            "securityStamp": "stamp",
-        })))
-        .mount(&mock_server)
-        .await;
+    setup_login_mocks(&mock_server, &encrypted_user_key).await;
 
     let (auth_service, storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
     // Login first
     let login_result = auth_service
         .login_with_password(
-            "test@example.com",
-            Secret::new("password".to_string()),
+            TEST_EMAIL,
+            Secret::new(TEST_PASSWORD.to_string()),
+            None,
             None,
         )
         .await;
-    assert!(login_result.is_ok());
+    assert!(login_result.is_ok(), "Login should succeed: {:?}", login_result.err());
 
     // Verify data is stored
     {
         let storage = storage.lock().await;
-        let profile: Option<UserProfile> = storage.get("userProfile").unwrap();
-        assert!(profile.is_some());
+        let access_token_key = StorageKey::UserAccessToken.format(Some("user_id_123"));
+        let token: Option<String> = storage.get(&access_token_key).unwrap();
+        assert!(token.is_some(), "Access token should be stored after login");
     }
 
     // Execute logout
     let logout_result = auth_service.logout().await;
-    assert!(logout_result.is_ok());
+    assert!(logout_result.is_ok(), "Logout should succeed: {:?}", logout_result.err());
 
-    // Verify storage is cleared
+    // Verify tokens are cleared (set to null)
     {
         let storage = storage.lock().await;
-        let profile: Option<UserProfile> = storage.get("userProfile").unwrap();
+        let access_token_key = StorageKey::UserAccessToken.format(Some("user_id_123"));
+        let token: Option<serde_json::Value> = storage.get(&access_token_key).unwrap();
+        // Token should be null (not removed, set to null per TypeScript CLI behavior)
         assert!(
-            profile.is_none(),
-            "User profile should be cleared after logout"
+            token == Some(serde_json::Value::Null) || token.is_none(),
+            "Access token should be cleared after logout, got: {:?}",
+            token
         );
     }
 }
 
 #[tokio::test]
 async fn test_session_key_format() {
+    // Generate a valid encrypted user key for our test credentials
+    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+
     let mock_server = MockServer::start().await;
-
-    // Setup mocks
-    Mock::given(method("POST"))
-        .and(path("/identity/accounts/prelogin"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "kdf": 0,
-            "kdfIterations": 600000,
-        })))
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("POST"))
-        .and(path("/identity/connect/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token": "access_token",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-            "refresh_token": "refresh_token",
-            "Key": "mock_encrypted_user_key",
-            "Kdf": 0,
-            "KdfIterations": 600000,
-            "ResetMasterPassword": false,
-        })))
-        .mount(&mock_server)
-        .await;
-
-    Mock::given(method("GET"))
-        .and(path("/api/accounts/profile"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id": "user_id",
-            "name": "Test User",
-            "email": "test@example.com",
-            "emailVerified": true,
-            "premium": false,
-            "securityStamp": "stamp",
-        })))
-        .mount(&mock_server)
-        .await;
+    setup_login_mocks(&mock_server, &encrypted_user_key).await;
 
     let (auth_service, _storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
     let result = auth_service
         .login_with_password(
-            "test@example.com",
-            Secret::new("password".to_string()),
+            TEST_EMAIL,
+            Secret::new(TEST_PASSWORD.to_string()),
+            None,
             None,
         )
         .await
-        .unwrap();
+        .expect("Login should succeed");
 
     // Verify session key is valid base64 (should decode successfully)
     use base64::Engine;

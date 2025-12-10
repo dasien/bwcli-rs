@@ -47,8 +47,23 @@ bw --help
 # Show version
 bw --version
 
-# Login (stub - not yet implemented)
+# Login with email/password
 bw login
+
+# Unlock vault (after login)
+bw unlock
+
+# Sync vault from server
+bw sync
+
+# List items
+bw list items
+
+# Get specific item
+bw get item <id>
+
+# Generate TOTP code
+bw get totp <id>
 
 # Check status
 bw status --response
@@ -66,23 +81,21 @@ bw status --response
 
 ## Development Status
 
-This project is in early development. Currently implemented:
+This project is in active development. Currently implemented:
 - ✅ Project structure and build configuration
 - ✅ CLI parsing with all commands
 - ✅ Global flags and environment variables
 - ✅ Response formatting system
 - ✅ SDK integration (real Bitwarden SDK crypto)
-- ✅ Storage layer (encrypted local state)
+- ✅ Storage layer (TypeScript CLI compatible)
 - ✅ API client (server communication)
-- ✅ Authentication infrastructure (login/unlock/logout)
-- 🚧 Command implementations (in progress)
+- ✅ Authentication (login, unlock, lock, logout)
+- ✅ Vault sync from server
+- ✅ Vault read commands (list, get, TOTP)
+- ✅ Password/passphrase generation
+- 🚧 Vault write commands (create, edit, delete)
+- 🚧 Send commands
+- 🚧 Import/export
 
-All commands currently return "Not yet implemented". See the [enhancement plan](enhancements/) for implementation roadmap.
+See [docs/security/key_handling_security.md](docs/security/key_handling_security.md) for security implementation details.
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## License
-
-GPL-3.0 - see [LICENSE](LICENSE) for details.

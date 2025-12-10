@@ -162,13 +162,13 @@ mod tests {
     fn test_password_login_request_form_encoding() {
         let req = PasswordLoginRequest {
             grant_type: "password".to_string(),
-            username: "genbwtest@gmail.com".to_string(),
-            password: "KvWwiZm4ti2jkEuR/EdKbZTPhtBVcyAZiydAyQplfuU=".to_string(),
+            username: "test@example.com".to_string(),
+            password: "hashed_password_base64==".to_string(),
             scope: "api offline_access".to_string(),
             client_id: "cli".to_string(),
             device_type: 7,
             device_name: "Bitwarden CLI on macos".to_string(),
-            device_identifier: "242e4af4-e88d-4e9f-9e24-e4981a1e236c".to_string(),
+            device_identifier: "00000000-0000-0000-0000-000000000000".to_string(),
             two_factor_token: None,
             two_factor_provider: None,
             two_factor_remember: None,
@@ -180,7 +180,7 @@ mod tests {
 
         // Verify key fields are present and properly encoded
         assert!(encoded.contains("grant_type=password"));
-        assert!(encoded.contains("username=genbwtest%40gmail.com"));
+        assert!(encoded.contains("username=test%40example.com"));
         assert!(encoded.contains("client_id=cli"));
         assert!(encoded.contains("deviceType=7"));
     }
