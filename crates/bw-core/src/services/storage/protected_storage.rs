@@ -207,25 +207,45 @@ pub fn decrypt_protected_bytes(
 
 /// Encrypt a user key with a session key for protected storage
 ///
+/// This matches the TypeScript CLI format:
+/// - Get user key as base64 string
+/// - Decode base64 to get raw key bytes
+/// - Encrypt those raw bytes
+///
 /// # Arguments
 /// * `user_key` - The user's symmetric key to encrypt
 /// * `session_key` - The session key to use for encryption
 ///
 /// # Returns
-/// Base64-encoded encrypted user key string
+/// Base64-encoded encrypted user key string (EncArrayBuffer format)
 pub fn encrypt_user_key(
     user_key: &SymmetricCryptoKey,
     session_key: &SymmetricCryptoKey,
 ) -> Result<String, ProtectedStorageError> {
-    // Get the user key as an encoded string and encrypt that
-    let user_key_str = format_session_key(user_key);
-    encrypt_protected_string(&user_key_str, session_key)
+    // Get the user key as base64 string
+    let user_key_b64 = format_session_key(user_key);
+
+    // Decode base64 to get raw key bytes (this is what TypeScript CLI does)
+    let key_bytes = STANDARD.decode(&user_key_b64).map_err(|e| {
+        ProtectedStorageError::InvalidBase64(format!("Failed to decode user key: {}", e))
+    })?;
+
+    // Encrypt the raw key bytes
+    encrypt_protected_bytes(&key_bytes, session_key)
 }
 
 /// Decrypt a user key from protected storage
 ///
+/// The TypeScript CLI stores user keys as raw bytes encrypted with the session key:
+/// - Takes user key base64 string
+/// - Decodes base64 to raw key bytes
+/// - Encrypts those raw bytes
+/// - Stores as base64
+///
+/// When decrypting, we get the raw key bytes back directly.
+///
 /// # Arguments
-/// * `encrypted_b64` - Base64-encoded encrypted user key string
+/// * `encrypted_b64` - Base64-encoded encrypted user key (EncArrayBuffer format)
 /// * `session_key` - The session key to use for decryption
 ///
 /// # Returns
@@ -234,10 +254,15 @@ pub fn decrypt_user_key(
     encrypted_b64: &str,
     session_key: &SymmetricCryptoKey,
 ) -> Result<SymmetricCryptoKey, ProtectedStorageError> {
-    let key_str = decrypt_protected_string(encrypted_b64, session_key)?;
+    // Decrypt to raw bytes (the actual user key bytes)
+    let key_bytes = decrypt_protected_bytes(encrypted_b64, session_key)?;
 
-    // Reconstruct the SymmetricCryptoKey from the encoded string
-    SymmetricCryptoKey::try_from(key_str).map_err(|e| {
+    // The decrypted bytes ARE the raw user key bytes (64 bytes for AES256-CBC-HMAC)
+    // Re-encode as base64 to construct the key (SDK expects base64 input)
+    let key_b64 = STANDARD.encode(&key_bytes);
+
+    // Reconstruct the SymmetricCryptoKey from the base64 string
+    SymmetricCryptoKey::try_from(key_b64).map_err(|e| {
         ProtectedStorageError::InvalidKeyFormat(format!("Failed to reconstruct key: {}", e))
     })
 }
