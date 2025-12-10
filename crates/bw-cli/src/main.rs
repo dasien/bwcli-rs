@@ -117,8 +117,23 @@ async fn main() -> ExitCode {
 
     let cli = Cli::parse();
 
+    // Initialize application context (services) once
+    let ctx = match AppContext::new() {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            if !cli.global_args.quiet {
+                eprintln!("Failed to initialize: {:#}", e);
+            }
+            return if cli.global_args.cleanexit {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            };
+        }
+    };
+
     // Execute command and format output
-    let result = execute_command(cli.command, &cli.global_args).await;
+    let result = execute_command(cli.command, &cli.global_args, &ctx).await;
 
     let exit_code = match result {
         Ok(response) => {
@@ -143,35 +158,41 @@ async fn main() -> ExitCode {
 async fn execute_command(
     command: Commands,
     global_args: &GlobalArgs,
+    ctx: &AppContext,
 ) -> anyhow::Result<output::Response> {
     use Commands::*;
 
     match command {
-        Login(cmd) => commands::execute_login(cmd, global_args).await,
-        Logout(cmd) => commands::execute_logout(cmd, global_args).await,
-        Lock(cmd) => commands::execute_lock(cmd, global_args).await,
-        Unlock(cmd) => commands::execute_unlock(cmd, global_args).await,
-        List(cmd) => commands::execute_list(cmd, global_args).await,
-        Get(cmd) => commands::execute_get(cmd, global_args).await,
-        Create(cmd) => commands::execute_create(cmd, global_args).await,
-        Edit(cmd) => commands::execute_edit(cmd, global_args).await,
-        Delete(cmd) => commands::execute_delete(cmd, global_args).await,
-        Restore(cmd) => commands::execute_restore(cmd, global_args).await,
-        Move(cmd) => commands::execute_move(cmd, global_args).await,
-        Confirm(cmd) => commands::execute_confirm(cmd, global_args).await,
-        Sync(cmd) => commands::execute_sync(cmd, global_args).await,
-        Generate(cmd) => commands::execute_generate(cmd, global_args).await,
-        Encode(cmd) => commands::execute_encode(cmd, global_args).await,
-        Decrypt(cmd) => commands::execute_decrypt(cmd, global_args).await,
-        Import(cmd) => commands::execute_import(cmd, global_args).await,
-        Export(cmd) => commands::execute_export(cmd, global_args).await,
-        Send(cmd) => commands::execute_send(cmd, global_args).await,
-        Receive(cmd) => commands::execute_receive(cmd, global_args).await,
-        Config(cmd) => commands::execute_config(cmd, global_args).await,
-        Status(cmd) => commands::execute_status(cmd, global_args).await,
+        Login(cmd) => commands::execute_login(cmd, global_args, ctx).await,
+        Logout(cmd) => commands::execute_logout(cmd, global_args, ctx).await,
+        Lock(cmd) => commands::execute_lock(cmd, global_args, ctx).await,
+        Unlock(cmd) => commands::execute_unlock(cmd, global_args, ctx).await,
+        List(cmd) => commands::execute_list(cmd, global_args, ctx).await,
+        Get(cmd) => commands::execute_get(cmd, global_args, ctx).await,
+        Create(cmd) => commands::execute_create(cmd, global_args, ctx).await,
+        Edit(cmd) => commands::execute_edit(cmd, global_args, ctx).await,
+        Delete(cmd) => commands::execute_delete(cmd, global_args, ctx).await,
+        Restore(cmd) => commands::execute_restore(cmd, global_args, ctx).await,
+        Move(cmd) => commands::execute_move(cmd, global_args, ctx).await,
+        Confirm(cmd) => commands::execute_confirm(cmd, global_args, ctx).await,
+        Sync(cmd) => commands::execute_sync(cmd, global_args, ctx).await,
+        Generate(cmd) => commands::execute_generate(cmd, global_args, ctx).await,
+        Encode(cmd) => commands::execute_encode(cmd, global_args, ctx).await,
+        Decrypt(cmd) => commands::execute_decrypt(cmd, global_args, ctx).await,
+        Import(cmd) => commands::execute_import(cmd, global_args, ctx).await,
+        Export(cmd) => commands::execute_export(cmd, global_args, ctx).await,
+        Send(cmd) => commands::execute_send(cmd, global_args, ctx).await,
+        Receive(cmd) => commands::execute_receive(cmd, global_args, ctx).await,
+        Config(cmd) => commands::execute_config(cmd, global_args, ctx).await,
+        Status(cmd) => commands::execute_status(cmd, global_args, ctx).await,
     }
 }
 
 // Module declarations
 mod commands;
+mod context;
+mod error;
 mod output;
+
+pub use context::AppContext;
+pub use error::CliError;

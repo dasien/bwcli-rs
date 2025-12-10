@@ -1,3 +1,4 @@
+use crate::AppContext;
 use crate::GlobalArgs;
 use crate::output::Response;
 use clap::{Args, Subcommand};
@@ -24,6 +25,7 @@ pub struct ConfigServerCommand {
 pub async fn execute_config(
     _cmd: ConfigCommand,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error("Not yet implemented"))
 }

@@ -1,19 +1,17 @@
+use crate::AppContext;
 use crate::GlobalArgs;
-use crate::commands::auth::{LockCommand, LogoutCommand, UnlockCommand, prompts};
+use crate::commands::auth::{LockCommand, LogoutCommand, UnlockCommand, input};
 use crate::output::Response;
 use anyhow::Result;
-use bw_core::services::ServiceContainer;
 use bw_core::services::auth::AuthService;
-use secrecy::Secret;
 
 /// Execute vault unlock
-pub async fn execute_unlock(cmd: UnlockCommand, global_args: &GlobalArgs) -> Result<Response> {
-    // Initialize services
-    let container = ServiceContainer::new(None, None, None, None)?;
-    let auth_service = AuthService::new(container.storage(), container.api_client());
+pub async fn execute_unlock(cmd: UnlockCommand, global_args: &GlobalArgs, ctx: &AppContext) -> Result<Response> {
+    // Use services from context
+    let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
 
     // Gather password
-    let password = get_password_input(cmd.password, global_args)?;
+    let password = input::require_password(cmd.password, global_args, None)?;
 
     // Execute unlock
     let result = auth_service.unlock(password).await?;
@@ -29,10 +27,9 @@ pub async fn execute_unlock(cmd: UnlockCommand, global_args: &GlobalArgs) -> Res
 }
 
 /// Execute vault lock
-pub async fn execute_lock(_cmd: LockCommand, _global_args: &GlobalArgs) -> Result<Response> {
-    // Initialize services
-    let container = ServiceContainer::new(None, None, None, None)?;
-    let auth_service = AuthService::new(container.storage(), container.api_client());
+pub async fn execute_lock(_cmd: LockCommand, _global_args: &GlobalArgs, ctx: &AppContext) -> Result<Response> {
+    // Use services from context
+    let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
 
     // Execute lock
     auth_service.lock().await?;
@@ -41,10 +38,9 @@ pub async fn execute_lock(_cmd: LockCommand, _global_args: &GlobalArgs) -> Resul
 }
 
 /// Execute logout
-pub async fn execute_logout(_cmd: LogoutCommand, _global_args: &GlobalArgs) -> Result<Response> {
-    // Initialize services
-    let container = ServiceContainer::new(None, None, None, None)?;
-    let auth_service = AuthService::new(container.storage(), container.api_client());
+pub async fn execute_logout(_cmd: LogoutCommand, _global_args: &GlobalArgs, ctx: &AppContext) -> Result<Response> {
+    // Use services from context
+    let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
 
     // Execute logout
     auth_service.logout().await?;
@@ -52,21 +48,3 @@ pub async fn execute_logout(_cmd: LogoutCommand, _global_args: &GlobalArgs) -> R
     Ok(Response::success("You have been logged out."))
 }
 
-// Helper functions
-
-fn get_password_input(
-    password_arg: Option<String>,
-    global_args: &GlobalArgs,
-) -> Result<Secret<String>> {
-    if let Some(password) = password_arg {
-        return Ok(Secret::new(password));
-    }
-
-    if global_args.nointeraction {
-        anyhow::bail!(
-            "Password is required. Use --nointeraction=false or provide PASSWORD argument."
-        );
-    }
-
-    prompts::prompt_password(None)
-}

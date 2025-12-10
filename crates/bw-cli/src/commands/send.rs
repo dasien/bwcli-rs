@@ -1,3 +1,4 @@
+use crate::AppContext;
 use crate::GlobalArgs;
 use crate::output::Response;
 use clap::{Args, Subcommand};
@@ -91,6 +92,7 @@ pub struct SendDeleteCommand {
 pub async fn execute_send(
     cmd: SendCommands,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     use SendCommands::*;
 

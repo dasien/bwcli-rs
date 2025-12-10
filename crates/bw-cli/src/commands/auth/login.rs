@@ -1,34 +1,32 @@
+use crate::AppContext;
 use crate::GlobalArgs;
-use crate::commands::auth::{LoginApiKeyCommand, LoginPasswordCommand, prompts};
+use crate::commands::auth::{LoginApiKeyCommand, LoginPasswordCommand, input, prompts};
 use crate::output::Response;
 use anyhow::Result;
-use bw_core::services::ServiceContainer;
+use bw_core::models::auth::TwoFactorMethod;
 use bw_core::services::auth::{AuthError, AuthService};
-use secrecy::Secret;
 
 /// Execute password-based login
 pub async fn execute_password_login(
     cmd: LoginPasswordCommand,
     global_args: &GlobalArgs,
+    ctx: &AppContext,
 ) -> Result<Response> {
-    // Initialize services
-    let container = ServiceContainer::new(None, None, None, None)?;
-    let auth_service = AuthService::new(container.storage(), container.api_client());
+    // Use services from context
+    let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
 
     // Gather inputs (prompt if missing and interactive mode allowed)
-    let email = get_email_input(cmd.email, global_args)?;
-    let password = get_password_input(cmd.password.clone(), global_args)?;
+    let email = input::require_string(cmd.email, global_args, "Email", prompts::prompt_email)?;
+    let password = input::require_password(cmd.password, global_args, None)?;
 
     // Build 2FA data if provided
-    let two_factor = if let Some(code) = cmd.code.clone() {
-        Some(bw_core::services::auth::TwoFactorData {
-            token: code,
-            provider: cmd.method.unwrap_or(0),
+    let two_factor = cmd.code.as_ref().map(|code| {
+        bw_core::services::auth::TwoFactorData {
+            token: code.clone(),
+            provider: cmd.method.unwrap_or(TwoFactorMethod::Authenticator as u8),
             remember: false,
-        })
-    } else {
-        None
-    };
+        }
+    });
 
     // Execute login (first attempt without device verification OTP)
     let result = auth_service
@@ -84,14 +82,14 @@ pub async fn execute_password_login(
 pub async fn execute_api_key_login(
     cmd: LoginApiKeyCommand,
     global_args: &GlobalArgs,
+    ctx: &AppContext,
 ) -> Result<Response> {
-    // Initialize services
-    let container = ServiceContainer::new(None, None, None, None)?;
-    let auth_service = AuthService::new(container.storage(), container.api_client());
+    // Use services from context
+    let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
 
     // Gather inputs
-    let client_id = get_client_id_input(cmd.client_id, global_args)?;
-    let client_secret = get_client_secret_input(cmd.client_secret, global_args)?;
+    let client_id = input::require_string(cmd.client_id, global_args, "Client ID", prompts::prompt_client_id)?;
+    let client_secret = input::require_secret(cmd.client_secret, global_args, "Client secret", prompts::prompt_client_secret)?;
 
     // Execute login
     let result = auth_service
@@ -110,64 +108,3 @@ pub async fn execute_api_key_login(
     )))
 }
 
-// Helper functions for input gathering
-
-fn get_email_input(email_arg: Option<String>, global_args: &GlobalArgs) -> Result<String> {
-    if let Some(email) = email_arg {
-        return Ok(email);
-    }
-
-    if global_args.nointeraction {
-        anyhow::bail!("Email is required. Use --nointeraction=false or provide EMAIL argument.");
-    }
-
-    prompts::prompt_email()
-}
-
-fn get_password_input(
-    password_arg: Option<String>,
-    global_args: &GlobalArgs,
-) -> Result<Secret<String>> {
-    if let Some(password) = password_arg {
-        return Ok(Secret::new(password));
-    }
-
-    if global_args.nointeraction {
-        anyhow::bail!(
-            "Password is required. Use --nointeraction=false or provide PASSWORD argument."
-        );
-    }
-
-    prompts::prompt_password(None)
-}
-
-fn get_client_id_input(client_id_arg: Option<String>, global_args: &GlobalArgs) -> Result<String> {
-    if let Some(client_id) = client_id_arg {
-        return Ok(client_id);
-    }
-
-    if global_args.nointeraction {
-        anyhow::bail!(
-            "Client ID is required. Use --nointeraction=false or provide --client-id argument."
-        );
-    }
-
-    prompts::prompt_client_id()
-}
-
-fn get_client_secret_input(
-    client_secret_arg: Option<String>,
-    global_args: &GlobalArgs,
-) -> Result<Secret<String>> {
-    if let Some(client_secret) = client_secret_arg {
-        return Ok(Secret::new(client_secret));
-    }
-
-    if global_args.nointeraction {
-        anyhow::bail!(
-            "Client secret is required. Use --nointeraction=false or provide --client-secret argument."
-        );
-    }
-
-    prompts::prompt_client_secret()
-}

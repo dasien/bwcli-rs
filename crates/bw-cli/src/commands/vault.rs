@@ -1,6 +1,7 @@
+use crate::AppContext;
 use crate::GlobalArgs;
 use crate::output::Response;
-use bw_core::ServiceContainer;
+use bw_core::services::storage::AccountManager;
 use bw_core::services::vault::{FieldType, ItemFilters, VaultService};
 use clap::{Args, Subcommand};
 use std::sync::Arc;
@@ -327,23 +328,32 @@ pub struct ConfirmCommand {
     pub organizationid: String,
 }
 
-// Helper to create vault service
-fn create_vault_service(_global_args: &GlobalArgs) -> anyhow::Result<VaultService> {
-    let container = Arc::new(ServiceContainer::new(None, None, None, None)?);
+/// Get the session key from global args, returning an error if not provided
+fn get_session(global_args: &GlobalArgs) -> anyhow::Result<&str> {
+    global_args.session.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("Vault is locked. Run 'bw unlock' and set BW_SESSION environment variable.")
+    })
+}
 
-    Ok(VaultService::new(
-        container.api_client(),
-        container.storage(),
-        Arc::new(container.sdk().clone()),
-    ))
+// Helper to create vault service
+fn create_vault_service(ctx: &AppContext) -> VaultService {
+    let account_manager = Arc::new(AccountManager::new(ctx.storage()));
+
+    VaultService::new(
+        ctx.api_client(),
+        ctx.storage(),
+        Arc::new(ctx.sdk().clone()),
+        account_manager,
+    )
 }
 
 // List command implementations
-pub async fn execute_list(cmd: ListCommands, global_args: &GlobalArgs) -> anyhow::Result<Response> {
-    let vault_service = create_vault_service(global_args)?;
+pub async fn execute_list(cmd: ListCommands, global_args: &GlobalArgs, ctx: &AppContext) -> anyhow::Result<Response> {
+    let vault_service = create_vault_service(ctx);
 
     match cmd {
         ListCommands::Items(item_cmd) => {
+            let session = get_session(global_args)?;
             let filters = ItemFilters {
                 organization_id: item_cmd.organizationid,
                 collection_id: item_cmd.collectionid,
@@ -353,15 +363,16 @@ pub async fn execute_list(cmd: ListCommands, global_args: &GlobalArgs) -> anyhow
                 trash: item_cmd.trash,
             };
 
-            match vault_service.list_items(&filters).await {
+            match vault_service.list_items(&filters, session).await {
                 Ok(items) => Ok(Response::success(items)),
                 Err(e) => Ok(Response::error(e.to_string())),
             }
         }
 
         ListCommands::Folders(folder_cmd) => {
+            let session = get_session(global_args)?;
             match vault_service
-                .list_folders(folder_cmd.search.as_deref())
+                .list_folders(folder_cmd.search.as_deref(), session)
                 .await
             {
                 Ok(folders) => Ok(Response::success(folders)),
@@ -370,10 +381,12 @@ pub async fn execute_list(cmd: ListCommands, global_args: &GlobalArgs) -> anyhow
         }
 
         ListCommands::Collections(collection_cmd) => {
+            let session = get_session(global_args)?;
             match vault_service
                 .list_collections(
                     collection_cmd.organizationid.as_deref(),
                     collection_cmd.search.as_deref(),
+                    session,
                 )
                 .await
             {
@@ -394,18 +407,22 @@ pub async fn execute_list(cmd: ListCommands, global_args: &GlobalArgs) -> anyhow
 }
 
 // Get command implementations
-pub async fn execute_get(cmd: GetCommands, global_args: &GlobalArgs) -> anyhow::Result<Response> {
-    let vault_service = create_vault_service(global_args)?;
+pub async fn execute_get(cmd: GetCommands, global_args: &GlobalArgs, ctx: &AppContext) -> anyhow::Result<Response> {
+    let vault_service = create_vault_service(ctx);
 
     match cmd {
-        GetCommands::Item(item_cmd) => match vault_service.get_item(&item_cmd.id).await {
-            Ok(item) => Ok(Response::success(item)),
-            Err(e) => Ok(Response::error(e.to_string())),
-        },
+        GetCommands::Item(item_cmd) => {
+            let session = get_session(global_args)?;
+            match vault_service.get_item(&item_cmd.id, session).await {
+                Ok(item) => Ok(Response::success(item)),
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
 
         GetCommands::Username(username_cmd) => {
+            let session = get_session(global_args)?;
             match vault_service
-                .get_field(&username_cmd.id, FieldType::Username)
+                .get_field(&username_cmd.id, FieldType::Username, session)
                 .await
             {
                 Ok(username) => {
@@ -421,8 +438,9 @@ pub async fn execute_get(cmd: GetCommands, global_args: &GlobalArgs) -> anyhow::
         }
 
         GetCommands::Password(password_cmd) => {
+            let session = get_session(global_args)?;
             match vault_service
-                .get_field(&password_cmd.id, FieldType::Password)
+                .get_field(&password_cmd.id, FieldType::Password, session)
                 .await
             {
                 Ok(password) => {
@@ -438,7 +456,11 @@ pub async fn execute_get(cmd: GetCommands, global_args: &GlobalArgs) -> anyhow::
         }
 
         GetCommands::Uri(uri_cmd) => {
-            match vault_service.get_field(&uri_cmd.id, FieldType::Uri).await {
+            let session = get_session(global_args)?;
+            match vault_service
+                .get_field(&uri_cmd.id, FieldType::Uri, session)
+                .await
+            {
                 Ok(uri) => {
                     if global_args.raw {
                         println!("{}", uri);
@@ -451,17 +473,20 @@ pub async fn execute_get(cmd: GetCommands, global_args: &GlobalArgs) -> anyhow::
             }
         }
 
-        GetCommands::Totp(totp_cmd) => match vault_service.get_totp(&totp_cmd.id).await {
-            Ok(code) => {
-                if global_args.raw {
-                    println!("{}", code);
-                    Ok(Response::success_message(""))
-                } else {
-                    Ok(Response::success(code))
+        GetCommands::Totp(totp_cmd) => {
+            let session = get_session(global_args)?;
+            match vault_service.get_totp(&totp_cmd.id, session).await {
+                Ok(code) => {
+                    if global_args.raw {
+                        println!("{}", code);
+                        Ok(Response::success_message(""))
+                    } else {
+                        Ok(Response::success(code))
+                    }
                 }
+                Err(e) => Ok(Response::error(e.to_string())),
             }
-            Err(e) => Ok(Response::error(e.to_string())),
-        },
+        }
 
         _ => Ok(Response::error("Not yet implemented")),
     }
@@ -471,6 +496,7 @@ pub async fn execute_get(cmd: GetCommands, global_args: &GlobalArgs) -> anyhow::
 pub async fn execute_create(
     _cmd: CreateCommands,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error("Not yet implemented"))
 }
@@ -478,6 +504,7 @@ pub async fn execute_create(
 pub async fn execute_edit(
     _cmd: EditCommands,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error("Not yet implemented"))
 }
@@ -485,6 +512,7 @@ pub async fn execute_edit(
 pub async fn execute_delete(
     _cmd: DeleteCommands,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error("Not yet implemented"))
 }
@@ -492,6 +520,7 @@ pub async fn execute_delete(
 pub async fn execute_restore(
     _cmd: RestoreCommand,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error("Not yet implemented"))
 }
@@ -499,6 +528,7 @@ pub async fn execute_restore(
 pub async fn execute_move(
     _cmd: MoveCommand,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error("Not yet implemented"))
 }
@@ -506,6 +536,7 @@ pub async fn execute_move(
 pub async fn execute_confirm(
     _cmd: ConfirmCommand,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error("Not yet implemented"))
 }

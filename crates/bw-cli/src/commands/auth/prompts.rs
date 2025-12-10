@@ -48,6 +48,10 @@ pub fn prompt_client_secret() -> Result<Secret<String>> {
 
 /// Prompt for 2FA method selection
 pub fn prompt_two_factor_method(available_methods: &[TwoFactorMethod]) -> Result<TwoFactorMethod> {
+    if available_methods.is_empty() {
+        anyhow::bail!("No two-factor methods available");
+    }
+
     let methods: Vec<&str> = available_methods.iter().map(|m| m.display_name()).collect();
 
     let selection = Select::new()
@@ -56,7 +60,10 @@ pub fn prompt_two_factor_method(available_methods: &[TwoFactorMethod]) -> Result
         .default(0)
         .interact()?;
 
-    Ok(available_methods[selection])
+    available_methods
+        .get(selection)
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("Invalid selection index: {}", selection))
 }
 
 /// Prompt for 2FA code

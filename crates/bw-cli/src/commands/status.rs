@@ -1,7 +1,7 @@
+use crate::AppContext;
 use crate::GlobalArgs;
 use crate::output::Response;
-use bw_core::ServiceContainer;
-use bw_core::services::storage::{AccountManager, StorageKey, Storage};
+use bw_core::services::storage::{AccountManager, Storage, StorageKey};
 use bw_core::services::vault::VaultService;
 use clap::Args;
 use serde::Serialize;
@@ -30,10 +30,10 @@ struct StatusData {
 pub async fn execute_status(
     _cmd: StatusCommand,
     _global_args: &GlobalArgs,
+    ctx: &AppContext,
 ) -> anyhow::Result<Response> {
-    // Create service container with defaults
-    let container = Arc::new(ServiceContainer::new(None, None, None, None)?);
-    let storage = container.storage();
+    // Use services from context
+    let storage = ctx.storage();
 
     // Create account manager to get user info
     let account_manager = AccountManager::new(Arc::clone(&storage));
@@ -78,9 +78,10 @@ pub async fn execute_status(
 
                 // Get last sync timestamp
                 let vault_service = VaultService::new(
-                    container.api_client(),
+                    ctx.api_client(),
                     Arc::clone(&storage),
-                    Arc::new(container.sdk().clone()),
+                    Arc::new(ctx.sdk().clone()),
+                    Arc::new(account_manager),
                 );
                 let sync_time = vault_service.get_last_sync().await.ok().flatten();
 

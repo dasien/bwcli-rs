@@ -1,3 +1,4 @@
+use crate::AppContext;
 use crate::GlobalArgs;
 use crate::output::Response;
 use clap::Args;
@@ -100,6 +101,7 @@ pub struct ExportCommand {
 pub async fn execute_generate(
     cmd: GenerateCommand,
     global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     use bw_core::services::generator::{
         PassphraseOptions, PasswordOptions, generate_passphrase, generate_password,
@@ -168,6 +170,7 @@ pub async fn execute_generate(
 pub async fn execute_encode(
     cmd: EncodeCommand,
     global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     use base64::{Engine as _, engine::general_purpose};
 
@@ -185,6 +188,7 @@ pub async fn execute_encode(
 pub async fn execute_decrypt(
     _cmd: DecryptCommand,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error("Not yet implemented"))
 }
@@ -192,6 +196,7 @@ pub async fn execute_decrypt(
 pub async fn execute_import(
     _cmd: ImportCommand,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error("Not yet implemented"))
 }
@@ -199,6 +204,7 @@ pub async fn execute_import(
 pub async fn execute_export(
     _cmd: ExportCommand,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error("Not yet implemented"))
 }

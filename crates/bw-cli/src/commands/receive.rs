@@ -1,3 +1,4 @@
+use crate::AppContext;
 use crate::GlobalArgs;
 use crate::output::Response;
 use clap::Args;
@@ -16,6 +17,7 @@ pub struct ReceiveCommand {
 pub async fn execute_receive(
     _cmd: ReceiveCommand,
     _global_args: &GlobalArgs,
+    _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error(
         "Receive command not yet implemented. Requires: Send API integration, URL parsing, encryption service",

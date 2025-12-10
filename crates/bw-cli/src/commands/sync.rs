@@ -1,6 +1,7 @@
+use crate::AppContext;
 use crate::GlobalArgs;
 use crate::output::Response;
-use bw_core::ServiceContainer;
+use bw_core::services::storage::AccountManager;
 use bw_core::services::vault::VaultService;
 use clap::Args;
 use std::sync::Arc;
@@ -16,15 +17,16 @@ pub struct SyncCommand {
     pub last: bool,
 }
 
-pub async fn execute_sync(cmd: SyncCommand, _global_args: &GlobalArgs) -> anyhow::Result<Response> {
-    // Create service container with defaults
-    let container = Arc::new(ServiceContainer::new(None, None, None, None)?);
+pub async fn execute_sync(cmd: SyncCommand, _global_args: &GlobalArgs, ctx: &AppContext) -> anyhow::Result<Response> {
+    // Use services from context
+    let account_manager = Arc::new(AccountManager::new(ctx.storage()));
 
     // Create vault service
     let vault_service = VaultService::new(
-        container.api_client(),
-        container.storage(),
-        Arc::new(container.sdk().clone()),
+        ctx.api_client(),
+        ctx.storage(),
+        Arc::new(ctx.sdk().clone()),
+        account_manager,
     );
 
     // Handle --last flag
