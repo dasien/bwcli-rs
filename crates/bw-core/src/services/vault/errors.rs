@@ -21,6 +21,9 @@ pub enum VaultError {
     #[error("TOTP not configured for this item")]
     TotpNotConfigured,
 
+    #[error("TOTP error: {0}")]
+    TotpError(String),
+
     #[error("Folder not found")]
     FolderNotFound,
 

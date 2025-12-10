@@ -6,9 +6,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// Implementations must provide:
 /// - Type-safe get/set operations with JSON serialization
-/// - Secure storage for sensitive values (encrypted at rest)
 /// - Atomic operations to prevent corruption
 /// - Thread-safe access for potential concurrent operations
+///
+/// Note: For encrypted storage of sensitive keys (like the user key),
+/// use the `protected_storage` module functions directly with the
+/// `__PROTECTED__` key prefix convention.
 #[async_trait]
 pub trait Storage: Send + Sync {
     /// Retrieve a value by key
@@ -32,25 +35,6 @@ pub trait Storage: Send + Sync {
 
     /// Check if a key exists
     fn has(&self, key: &str) -> Result<bool>;
-
-    /// Retrieve a secure (encrypted) value
-    ///
-    /// Requires BW_SESSION environment variable to decrypt
-    /// Returns None if key doesn't exist
-    /// Returns error if BW_SESSION missing or decryption fails
-    async fn get_secure(&self, key: &str) -> Result<Option<String>>;
-
-    /// Store a secure (encrypted) value
-    ///
-    /// Encrypts value using BW_SESSION before storing
-    /// Stores with __PROTECTED__ key prefix
-    /// Requires BW_SESSION environment variable
-    async fn set_secure(&mut self, key: &str, value: &str) -> Result<()>;
-
-    /// Remove a secure value by key
-    ///
-    /// Automatically adds __PROTECTED__ prefix if not present
-    async fn remove_secure(&mut self, key: &str) -> Result<bool>;
 
     /// Persist all pending changes to disk
     ///

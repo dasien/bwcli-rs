@@ -159,23 +159,17 @@ impl TokenManager {
 
             let user_id = match active_id {
                 Some(serde_json::Value::String(id)) if !id.is_empty() => id,
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "No active user during token refresh"
-                    ))
-                }
+                _ => return Err(anyhow::anyhow!("No active user during token refresh")),
             };
 
             let access_token_key = StorageKey::UserAccessToken.format(Some(&user_id));
             storage
-                .set_secure(&access_token_key, &response.access_token)
+                .set(&access_token_key, &response.access_token)
                 .await?;
 
             if let Some(new_refresh_token) = &response.refresh_token {
                 let refresh_token_key = StorageKey::UserRefreshToken.format(Some(&user_id));
-                storage
-                    .set_secure(&refresh_token_key, new_refresh_token)
-                    .await?;
+                storage.set(&refresh_token_key, new_refresh_token).await?;
             }
         }
 
@@ -202,8 +196,8 @@ impl TokenManager {
         let mut storage = self.storage.lock().await;
         let access_key = StorageKey::UserAccessToken.format(Some(user_id));
         let refresh_key = StorageKey::UserRefreshToken.format(Some(user_id));
-        storage.set_secure(&access_key, access_token).await?;
-        storage.set_secure(&refresh_key, refresh_token).await?;
+        storage.set(&access_key, &access_token.to_string()).await?;
+        storage.set(&refresh_key, &refresh_token.to_string()).await?;
         Ok(())
     }
 

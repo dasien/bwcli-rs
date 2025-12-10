@@ -109,7 +109,7 @@ impl SessionManager {
         }
 
         // Fall back to legacy format check
-        let access_token: Option<String> = storage.get_secure("accessToken").await?;
+        let access_token: Option<String> = storage.get("accessToken")?;
         Ok(access_token.is_some())
     }
 

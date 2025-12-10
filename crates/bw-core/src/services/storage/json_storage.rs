@@ -3,7 +3,6 @@ use super::{
     errors::StorageError,
     keys::{SUPPORTED_STATE_VERSION, StorageKey},
     path::StoragePath,
-    secure::SecureStorage,
     traits::Storage,
 };
 use anyhow::Result;
@@ -30,9 +29,6 @@ pub struct JsonFileStorage {
     /// Uses Mutex for interior mutability (required for get operations)
     data: Arc<Mutex<HashMap<String, Value>>>,
 
-    /// Secure storage handler for encrypted values
-    secure: SecureStorage,
-
     /// Atomic writer for safe file operations
     writer: AtomicWriter,
 }
@@ -55,7 +51,6 @@ impl JsonFileStorage {
         // Ensure storage directory exists with correct permissions
         StoragePath::ensure_directory_exists(&storage_path)?;
 
-        let secure = SecureStorage::new()?;
         let writer = AtomicWriter::new(file_path.clone());
 
         let data = if file_path.exists() {
@@ -64,11 +59,7 @@ impl JsonFileStorage {
             Arc::new(Mutex::new(HashMap::new()))
         };
 
-        Ok(Self {
-            data,
-            secure,
-            writer,
-        })
+        Ok(Self { data, writer })
     }
 
     /// Load storage from file
@@ -269,42 +260,6 @@ impl Storage for JsonFileStorage {
         let root = Value::Object(data.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
 
         Ok(Self::get_nested(&root, key).is_some())
-    }
-
-    async fn get_secure(&self, key: &str) -> Result<Option<String>> {
-        let protected_key = format!("__PROTECTED__{}", key);
-
-        // Get encrypted value
-        let encrypted: Option<String> = self.get(&protected_key)?;
-
-        match encrypted {
-            None => Ok(None),
-            Some(enc_str) => {
-                // Decrypt using secure storage
-                let decrypted = self.secure.decrypt(&enc_str)?;
-                Ok(Some(decrypted))
-            }
-        }
-    }
-
-    async fn set_secure(&mut self, key: &str, value: &str) -> Result<()> {
-        let protected_key = format!("__PROTECTED__{}", key);
-
-        // Encrypt using secure storage
-        let encrypted = self.secure.encrypt(value)?;
-
-        // Store encrypted value
-        self.set(&protected_key, &encrypted).await
-    }
-
-    async fn remove_secure(&mut self, key: &str) -> Result<bool> {
-        let protected_key = if key.starts_with("__PROTECTED__") {
-            key.to_string()
-        } else {
-            format!("__PROTECTED__{}", key)
-        };
-
-        self.remove(&protected_key).await
     }
 
     async fn flush(&mut self) -> Result<()> {
