@@ -57,7 +57,9 @@ impl StoragePath {
         #[cfg(target_os = "windows")]
         {
             let appdata = env::var("APPDATA").map_err(|_| {
-                StorageError::PathResolutionError("Could not determine APPDATA directory".to_string())
+                StorageError::PathResolutionError(
+                    "Could not determine APPDATA directory".to_string(),
+                )
             })?;
             return Ok(PathBuf::from(appdata).join("Bitwarden CLI"));
         }
@@ -65,11 +67,10 @@ impl StoragePath {
         #[cfg(target_os = "linux")]
         {
             // Use XDG_CONFIG_HOME if set, otherwise ~/.config
-            let config_home = env::var("XDG_CONFIG_HOME")
-                .unwrap_or_else(|_| {
-                    let home = env::var("HOME").unwrap_or_else(|_| String::from("~"));
-                    format!("{}/.config", home)
-                });
+            let config_home = env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
+                let home = env::var("HOME").unwrap_or_else(|_| String::from("~"));
+                format!("{}/.config", home)
+            });
             return Ok(PathBuf::from(config_home).join("Bitwarden CLI"));
         }
 

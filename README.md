@@ -97,5 +97,3 @@ This project is in active development. Currently implemented:
 - 🚧 Send commands
 - 🚧 Import/export
 
-See [docs/security/key_handling_security.md](docs/security/key_handling_security.md) for security implementation details.
-

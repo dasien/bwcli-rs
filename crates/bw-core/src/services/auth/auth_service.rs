@@ -10,7 +10,10 @@ use crate::services::{
     api::{ApiClient, BitwardenApiClient},
     auth::{errors::AuthError, session_manager::SessionManager},
     crypto,
-    storage::{AccountManager, JsonFileStorage, Storage, StorageKey},
+    storage::{
+        AccountManager, JsonFileStorage, Storage, StorageKey, encrypt_user_key, format_session_key,
+        generate_session_key, make_protected_key, user_key_protected_storage_key,
+    },
 };
 use anyhow::Result;
 use bitwarden_crypto::{CryptoError, Kdf, MasterKey, SymmetricCryptoKey};
@@ -89,11 +92,17 @@ impl AuthService {
         debug!("Authenticating with server");
         let device_info = self.get_device_info().await?;
         let login_response = self
-            .authenticate_password(email, &hashed_password, &device_info, two_factor, new_device_otp)
+            .authenticate_password(
+                email,
+                &hashed_password,
+                &device_info,
+                two_factor,
+                new_device_otp,
+            )
             .await?;
 
         // Step 5: Decrypt user key (if available)
-        let _user_key = if let Some(ref encrypted_key) = login_response.key {
+        let user_key = if let Some(ref encrypted_key) = login_response.key {
             debug!("Decrypting user key");
             Some(self.decrypt_user_key(encrypted_key, &master_key).await?)
         } else {
@@ -105,12 +114,31 @@ impl AuthService {
         debug!("Fetching user profile");
         let profile = self.fetch_profile(&login_response.access_token).await?;
 
-        // Step 7: Generate session key
+        // Step 7: Generate session key using SDK
         debug!("Generating session key");
-        let session_key = SessionManager::generate_session_key();
-        let session_key_str = SessionManager::format_for_export(&session_key);
+        let session_key = generate_session_key();
+        let session_key_str = format_session_key(&session_key);
 
-        // Step 8: Persist authentication state
+        // Step 8: Store user key in protected storage (if available)
+        if let Some(ref uk) = user_key {
+            debug!("Storing user key in protected storage");
+            let encrypted_protected_key = encrypt_user_key(uk, &session_key).map_err(|e| {
+                AuthError::CryptoOperationFailed {
+                    message: format!("Failed to encrypt user key for protected storage: {}", e),
+                }
+            })?;
+
+            let protected_key = make_protected_key(&user_key_protected_storage_key(&profile.id));
+
+            let mut storage = self.storage.lock().await;
+            storage
+                .set(&protected_key, &encrypted_protected_key)
+                .await?;
+            storage.flush().await?;
+            drop(storage);
+        }
+
+        // Step 9: Persist authentication state
         debug!("Persisting authentication state");
         self.persist_auth_state(
             &profile.id,
@@ -172,9 +200,9 @@ impl AuthService {
         // Fetch user profile
         let profile = self.fetch_profile(&login_response.access_token).await?;
 
-        // Generate session key
-        let session_key = SessionManager::generate_session_key();
-        let session_key_str = SessionManager::format_for_export(&session_key);
+        // Generate session key using SDK
+        let session_key = generate_session_key();
+        let session_key_str = format_session_key(&session_key);
 
         // Note: API key login doesn't have user key or KDF config
         // Persist minimal authentication state
@@ -247,15 +275,32 @@ impl AuthService {
 
         // Try to decrypt user key (validates password)
         debug!("Decrypting user key");
-        let _user_key = self
+        let user_key = self
             .decrypt_user_key(&encrypted_user_key, &master_key)
             .await
             .map_err(|_| AuthError::InvalidPassword)?;
 
-        // Generate new session key
+        // Generate new session key using SDK
         debug!("Generating session key");
-        let session_key = SessionManager::generate_session_key();
-        let session_key_str = SessionManager::format_for_export(&session_key);
+        let session_key = generate_session_key();
+        let session_key_str = format_session_key(&session_key);
+
+        // Store user key in protected storage
+        debug!("Storing user key in protected storage");
+        let encrypted_protected_key = encrypt_user_key(&user_key, &session_key).map_err(|e| {
+            AuthError::CryptoOperationFailed {
+                message: format!("Failed to encrypt user key for protected storage: {}", e),
+            }
+        })?;
+
+        let protected_key = make_protected_key(&user_key_protected_storage_key(&user_id));
+
+        let mut storage = self.storage.lock().await;
+        storage
+            .set(&protected_key, &encrypted_protected_key)
+            .await?;
+        storage.flush().await?;
+        drop(storage);
 
         info!("Vault unlock successful");
 
@@ -264,15 +309,29 @@ impl AuthService {
         })
     }
 
-    /// Lock vault (clear session keys)
+    /// Lock vault (clear session keys and protected user key)
     pub async fn lock(&self) -> Result<(), AuthError> {
         info!("Locking vault");
+
+        // Get active user ID
+        let user_id = self
+            .account_manager
+            .get_active_user_id()
+            .await?
+            .ok_or(AuthError::NotLoggedIn)?;
 
         // Check if logged in using account manager
         let logged_in = self.account_manager.is_logged_in().await?;
         if !logged_in {
             return Err(AuthError::NotLoggedIn);
         }
+
+        // Clear protected user key from storage
+        let protected_key = make_protected_key(&user_key_protected_storage_key(&user_id));
+        let mut storage = self.storage.lock().await;
+        storage.remove(&protected_key).await?;
+        storage.flush().await?;
+        drop(storage);
 
         // Clear session key hint (actual BW_SESSION is user's responsibility)
         self.session_manager.clear_session_key().await?;
@@ -308,6 +367,10 @@ impl AuthService {
                 &serde_json::Value::Null,
             )
             .await?;
+
+        // Clear protected user key
+        let protected_key = make_protected_key(&user_key_protected_storage_key(&user_id));
+        storage.remove(&protected_key).await?;
 
         storage.flush().await?;
         drop(storage);

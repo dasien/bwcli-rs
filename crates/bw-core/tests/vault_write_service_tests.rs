@@ -9,11 +9,13 @@
 //!
 //! Note: These tests use the placeholder encryption implementation.
 //! Real SDK integration will require updating these tests.
+//! Write operations require a session key for encryption - tests that need
+//! encryption pass a dummy session key.
 
 use bw_core::models::vault::{CipherLoginView, CipherType, CipherView, VaultData};
 use bw_core::services::api::{BitwardenApiClient, Environment};
 use bw_core::services::create_sdk_client;
-use bw_core::services::storage::{JsonFileStorage, Storage};
+use bw_core::services::storage::{AccountManager, JsonFileStorage, Storage};
 use bw_core::services::vault::{
     CipherService, ConfirmationService, ValidationService, VaultError, WriteService,
 };
@@ -58,6 +60,7 @@ async fn setup_test_environment() -> (
     Arc<CipherService>,
     Arc<ValidationService>,
     Arc<ConfirmationService>,
+    Arc<AccountManager>,
 ) {
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().to_path_buf();
@@ -85,6 +88,7 @@ async fn setup_test_environment() -> (
     let cipher_service = Arc::new(CipherService::new(sdk_client.clone()));
     let validation_service = Arc::new(ValidationService::new());
     let confirmation_service = Arc::new(ConfirmationService::new(true)); // no_interaction=true
+    let account_manager = Arc::new(AccountManager::new(storage.clone()));
 
     (
         api_client,
@@ -92,6 +96,7 @@ async fn setup_test_environment() -> (
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     )
 }
 
@@ -101,8 +106,14 @@ async fn setup_test_environment() -> (
 
 #[tokio::test]
 async fn test_create_cipher_rejects_invalid_input() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -110,13 +121,15 @@ async fn test_create_cipher_rejects_invalid_input() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
     // Create invalid cipher (missing name)
     let mut cipher_view = create_test_cipher_view();
     cipher_view.name = String::new();
 
-    let result = write_service.create_cipher(cipher_view).await;
+    // Dummy session - won't be used since validation fails first
+    let result = write_service.create_cipher(cipher_view, "dummy").await;
 
     // Should fail validation
     assert!(result.is_err());
@@ -128,8 +141,14 @@ async fn test_create_cipher_rejects_invalid_input() {
 
 #[tokio::test]
 async fn test_create_cipher_rejects_invalid_uuid() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -137,13 +156,14 @@ async fn test_create_cipher_rejects_invalid_uuid() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
     // Create cipher with invalid folder UUID
     let mut cipher_view = create_test_cipher_view();
     cipher_view.folder_id = Some("not-a-uuid".to_string());
 
-    let result = write_service.create_cipher(cipher_view).await;
+    let result = write_service.create_cipher(cipher_view, "dummy").await;
 
     // Should fail validation
     assert!(result.is_err());
@@ -155,8 +175,14 @@ async fn test_create_cipher_rejects_invalid_uuid() {
 
 #[tokio::test]
 async fn test_create_cipher_rejects_field_too_long() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -164,13 +190,14 @@ async fn test_create_cipher_rejects_field_too_long() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
     // Create cipher with name too long
     let mut cipher_view = create_test_cipher_view();
     cipher_view.name = "a".repeat(1001);
 
-    let result = write_service.create_cipher(cipher_view).await;
+    let result = write_service.create_cipher(cipher_view, "dummy").await;
 
     // Should fail validation
     assert!(result.is_err());
@@ -186,8 +213,14 @@ async fn test_create_cipher_rejects_field_too_long() {
 
 #[tokio::test]
 async fn test_validate_cipher_exists_returns_error_when_not_found() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -195,12 +228,13 @@ async fn test_validate_cipher_exists_returns_error_when_not_found() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
     // Try to update non-existent cipher
     let cipher_view = create_test_cipher_view();
     let result = write_service
-        .update_cipher("non-existent-id", cipher_view)
+        .update_cipher("non-existent-id", cipher_view, "dummy")
         .await;
 
     // Should fail because cipher doesn't exist
@@ -210,8 +244,14 @@ async fn test_validate_cipher_exists_returns_error_when_not_found() {
 
 #[tokio::test]
 async fn test_validate_folder_exists_returns_error_when_not_found() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -219,6 +259,7 @@ async fn test_validate_folder_exists_returns_error_when_not_found() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
     // Try to delete non-existent folder
@@ -235,8 +276,14 @@ async fn test_validate_folder_exists_returns_error_when_not_found() {
 
 #[tokio::test]
 async fn test_create_folder_rejects_empty_name() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -244,9 +291,10 @@ async fn test_create_folder_rejects_empty_name() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
-    let result = write_service.create_folder(String::new()).await;
+    let result = write_service.create_folder(String::new(), "dummy").await;
 
     // Should fail validation
     assert!(result.is_err());
@@ -258,8 +306,14 @@ async fn test_create_folder_rejects_empty_name() {
 
 #[tokio::test]
 async fn test_create_folder_rejects_name_too_long() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -267,9 +321,12 @@ async fn test_create_folder_rejects_name_too_long() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
-    let result = write_service.create_folder("a".repeat(1001)).await;
+    let result = write_service
+        .create_folder("a".repeat(1001), "dummy")
+        .await;
 
     // Should fail validation
     assert!(result.is_err());
@@ -281,8 +338,14 @@ async fn test_create_folder_rejects_name_too_long() {
 
 #[tokio::test]
 async fn test_update_folder_rejects_empty_name() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -290,9 +353,12 @@ async fn test_update_folder_rejects_empty_name() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
-    let result = write_service.update_folder("some-id", String::new()).await;
+    let result = write_service
+        .update_folder("some-id", String::new(), "dummy")
+        .await;
 
     // Should fail validation before checking if folder exists
     assert!(result.is_err());
@@ -309,8 +375,14 @@ async fn test_update_folder_rejects_empty_name() {
 
 #[tokio::test]
 async fn test_create_login_without_login_data_fails() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -318,13 +390,14 @@ async fn test_create_login_without_login_data_fails() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
     let mut cipher_view = create_test_cipher_view();
     cipher_view.cipher_type = CipherType::Login;
     cipher_view.login = None; // Missing required login data
 
-    let result = write_service.create_cipher(cipher_view).await;
+    let result = write_service.create_cipher(cipher_view, "dummy").await;
 
     assert!(result.is_err());
     assert!(matches!(
@@ -335,8 +408,14 @@ async fn test_create_login_without_login_data_fails() {
 
 #[tokio::test]
 async fn test_create_secure_note_without_secure_note_data_fails() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -344,6 +423,7 @@ async fn test_create_secure_note_without_secure_note_data_fails() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
     let mut cipher_view = create_test_cipher_view();
@@ -351,7 +431,7 @@ async fn test_create_secure_note_without_secure_note_data_fails() {
     cipher_view.login = None;
     cipher_view.secure_note = None; // Missing required secure_note data
 
-    let result = write_service.create_cipher(cipher_view).await;
+    let result = write_service.create_cipher(cipher_view, "dummy").await;
 
     assert!(result.is_err());
     assert!(matches!(
@@ -362,8 +442,14 @@ async fn test_create_secure_note_without_secure_note_data_fails() {
 
 #[tokio::test]
 async fn test_create_card_without_card_data_fails() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -371,6 +457,7 @@ async fn test_create_card_without_card_data_fails() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
     let mut cipher_view = create_test_cipher_view();
@@ -378,7 +465,7 @@ async fn test_create_card_without_card_data_fails() {
     cipher_view.login = None;
     cipher_view.card = None; // Missing required card data
 
-    let result = write_service.create_cipher(cipher_view).await;
+    let result = write_service.create_cipher(cipher_view, "dummy").await;
 
     assert!(result.is_err());
     assert!(matches!(
@@ -389,8 +476,14 @@ async fn test_create_card_without_card_data_fails() {
 
 #[tokio::test]
 async fn test_create_identity_without_identity_data_fails() {
-    let (api_client, storage, cipher_service, validation_service, confirmation_service) =
-        setup_test_environment().await;
+    let (
+        api_client,
+        storage,
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
         api_client,
@@ -398,6 +491,7 @@ async fn test_create_identity_without_identity_data_fails() {
         cipher_service,
         validation_service,
         confirmation_service,
+        account_manager,
     );
 
     let mut cipher_view = create_test_cipher_view();
@@ -405,7 +499,7 @@ async fn test_create_identity_without_identity_data_fails() {
     cipher_view.login = None;
     cipher_view.identity = None; // Missing required identity data
 
-    let result = write_service.create_cipher(cipher_view).await;
+    let result = write_service.create_cipher(cipher_view, "dummy").await;
 
     assert!(result.is_err());
     assert!(matches!(
@@ -423,6 +517,7 @@ async fn test_create_identity_without_identity_data_fails() {
 // 1. A mock HTTP server (using wiremock or similar)
 // 2. A test Bitwarden server
 // 3. Dependency injection to mock the API client
+// 4. A valid session key with stored user key in protected storage
 //
 // The tests above focus on validation and error handling, which can be
 // tested without actual API calls. The cache management methods are

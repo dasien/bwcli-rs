@@ -1,8 +1,7 @@
 //! Cipher encryption/decryption service
 //!
 //! Handles all SDK integration for encrypting and decrypting vault items.
-//! NOTE: This implementation uses placeholder encryption/decryption. Real SDK integration
-//! needs to be added when the Bitwarden SDK is available.
+//! Uses the bitwarden-crypto SDK for all cryptographic operations.
 
 use super::errors::VaultError;
 use crate::models::vault::{
@@ -11,12 +10,14 @@ use crate::models::vault::{
     CipherView, Collection, CollectionView, Folder, FolderView,
 };
 use crate::services::sdk::Client;
+use bitwarden_crypto::{EncString, KeyDecryptable, KeyEncryptable, SymmetricCryptoKey};
 use std::sync::Arc;
 
 /// Service for cipher decryption operations
 ///
 /// Handles all SDK integration for decrypting vault items.
 pub struct CipherService {
+    #[allow(dead_code)]
     sdk_client: Arc<Client>,
 }
 
@@ -25,19 +26,20 @@ impl CipherService {
         Self { sdk_client }
     }
 
-    /// Decrypt a single cipher
-    pub async fn decrypt_cipher(&self, cipher: &Cipher) -> Result<CipherView, VaultError> {
-        // TODO: Use SDK to decrypt cipher
-        // This is a placeholder - actual SDK integration required
-
+    /// Decrypt a single cipher using the provided user key
+    pub async fn decrypt_cipher(
+        &self,
+        cipher: &Cipher,
+        user_key: &SymmetricCryptoKey,
+    ) -> Result<CipherView, VaultError> {
         Ok(CipherView {
             id: cipher.id.clone(),
             organization_id: cipher.organization_id.clone(),
             folder_id: cipher.folder_id.clone(),
             cipher_type: cipher.cipher_type,
-            name: self.decrypt_string(&cipher.name).await?,
+            name: self.decrypt_string(&cipher.name, user_key)?,
             notes: if let Some(notes) = &cipher.notes {
-                Some(self.decrypt_string(notes).await?)
+                Some(self.decrypt_string(notes, user_key)?)
             } else {
                 None
             },
@@ -47,18 +49,18 @@ impl CipherService {
             creation_date: cipher.creation_date.clone(),
             deleted_date: cipher.deleted_date.clone(),
             login: if let Some(login) = &cipher.login {
-                Some(self.decrypt_login(login).await?)
+                Some(self.decrypt_login(login, user_key)?)
             } else {
                 None
             },
             secure_note: cipher.secure_note.clone(),
             card: if let Some(card) = &cipher.card {
-                Some(self.decrypt_card(card).await?)
+                Some(self.decrypt_card(card, user_key)?)
             } else {
                 None
             },
             identity: if let Some(identity) = &cipher.identity {
-                Some(self.decrypt_identity(identity).await?)
+                Some(self.decrypt_identity(identity, user_key)?)
             } else {
                 None
             },
@@ -68,9 +70,9 @@ impl CipherService {
                 if let Some(cipher_fields) = &cipher.fields {
                     for field in cipher_fields {
                         fields.push(CipherFieldView {
-                            name: self.decrypt_string(&field.name).await?,
+                            name: self.decrypt_string(&field.name, user_key)?,
                             value: if let Some(v) = &field.value {
-                                Some(self.decrypt_string(v).await?)
+                                Some(self.decrypt_string(v, user_key)?)
                             } else {
                                 None
                             },
@@ -83,11 +85,15 @@ impl CipherService {
         })
     }
 
-    /// Decrypt multiple ciphers
-    pub async fn decrypt_ciphers(&self, ciphers: &[Cipher]) -> Result<Vec<CipherView>, VaultError> {
+    /// Decrypt multiple ciphers using the provided user key
+    pub async fn decrypt_ciphers(
+        &self,
+        ciphers: &[Cipher],
+        user_key: &SymmetricCryptoKey,
+    ) -> Result<Vec<CipherView>, VaultError> {
         let mut results = Vec::new();
         for cipher in ciphers {
-            match self.decrypt_cipher(cipher).await {
+            match self.decrypt_cipher(cipher, user_key).await {
                 Ok(decrypted) => results.push(decrypted),
                 Err(e) => {
                     // Log error but continue with other ciphers
@@ -98,30 +104,35 @@ impl CipherService {
         Ok(results)
     }
 
-    /// Decrypt folders
-    pub async fn decrypt_folders(&self, folders: &[Folder]) -> Result<Vec<FolderView>, VaultError> {
+    /// Decrypt folders using the provided user key
+    pub async fn decrypt_folders(
+        &self,
+        folders: &[Folder],
+        user_key: &SymmetricCryptoKey,
+    ) -> Result<Vec<FolderView>, VaultError> {
         let mut results = Vec::new();
         for folder in folders {
             results.push(FolderView {
                 id: folder.id.clone(),
-                name: self.decrypt_string(&folder.name).await?,
+                name: self.decrypt_string(&folder.name, user_key)?,
                 revision_date: folder.revision_date.clone(),
             });
         }
         Ok(results)
     }
 
-    /// Decrypt collections
+    /// Decrypt collections using the provided user key
     pub async fn decrypt_collections(
         &self,
         collections: &[Collection],
+        user_key: &SymmetricCryptoKey,
     ) -> Result<Vec<CollectionView>, VaultError> {
         let mut results = Vec::new();
         for collection in collections {
             results.push(CollectionView {
                 id: collection.id.clone(),
                 organization_id: collection.organization_id.clone(),
-                name: self.decrypt_string(&collection.name).await?,
+                name: self.decrypt_string(&collection.name, user_key)?,
                 external_id: collection.external_id.clone(),
                 read_only: collection.read_only,
             });
@@ -129,28 +140,41 @@ impl CipherService {
         Ok(results)
     }
 
-    // Private helper methods
+    // Private helper methods for decryption
 
-    async fn decrypt_string(&self, enc_string: &str) -> Result<String, VaultError> {
-        // TODO: Implement SDK decryption
-        // For now, placeholder that returns the encrypted string
-        // Real implementation will use:
-        // self.sdk_client.decrypt_string(enc_string).await
-        Ok(enc_string.to_string())
+    /// Decrypt an encrypted string using the user key
+    fn decrypt_string(
+        &self,
+        enc_string: &str,
+        key: &SymmetricCryptoKey,
+    ) -> Result<String, VaultError> {
+        if enc_string.is_empty() {
+            return Ok(String::new());
+        }
+
+        // Parse the encrypted string (format: "type.iv|ct|mac" or "type.iv|ct")
+        let enc: EncString = enc_string
+            .parse()
+            .map_err(|e| VaultError::DecryptionError(format!("Invalid EncString format: {}", e)))?;
+
+        // Decrypt using the SDK
+        enc.decrypt_with_key(key)
+            .map_err(|e| VaultError::DecryptionError(format!("Decryption failed: {}", e)))
     }
 
-    async fn decrypt_login(
+    fn decrypt_login(
         &self,
-        login: &crate::models::vault::CipherLogin,
+        login: &CipherLogin,
+        key: &SymmetricCryptoKey,
     ) -> Result<CipherLoginView, VaultError> {
         Ok(CipherLoginView {
             username: if let Some(u) = &login.username {
-                Some(self.decrypt_string(u).await?)
+                Some(self.decrypt_string(u, key)?)
             } else {
                 None
             },
             password: if let Some(p) = &login.password {
-                Some(self.decrypt_string(p).await?)
+                Some(self.decrypt_string(p, key)?)
             } else {
                 None
             },
@@ -159,7 +183,7 @@ impl CipherService {
                 for uri in &login.uris {
                     uris.push(CipherLoginUriView {
                         uri: if let Some(u) = &uri.uri {
-                            Some(self.decrypt_string(u).await?)
+                            Some(self.decrypt_string(u, key)?)
                         } else {
                             None
                         },
@@ -169,138 +193,140 @@ impl CipherService {
                 uris
             },
             totp: if let Some(t) = &login.totp {
-                Some(self.decrypt_string(t).await?)
+                Some(self.decrypt_string(t, key)?)
             } else {
                 None
             },
         })
     }
 
-    async fn decrypt_card(
+    fn decrypt_card(
         &self,
-        card: &crate::models::vault::CipherCard,
+        card: &CipherCard,
+        key: &SymmetricCryptoKey,
     ) -> Result<CipherCardView, VaultError> {
         Ok(CipherCardView {
             cardholder_name: if let Some(n) = &card.cardholder_name {
-                Some(self.decrypt_string(n).await?)
+                Some(self.decrypt_string(n, key)?)
             } else {
                 None
             },
             number: if let Some(n) = &card.number {
-                Some(self.decrypt_string(n).await?)
+                Some(self.decrypt_string(n, key)?)
             } else {
                 None
             },
             brand: if let Some(b) = &card.brand {
-                Some(self.decrypt_string(b).await?)
+                Some(self.decrypt_string(b, key)?)
             } else {
                 None
             },
             exp_month: if let Some(m) = &card.exp_month {
-                Some(self.decrypt_string(m).await?)
+                Some(self.decrypt_string(m, key)?)
             } else {
                 None
             },
             exp_year: if let Some(y) = &card.exp_year {
-                Some(self.decrypt_string(y).await?)
+                Some(self.decrypt_string(y, key)?)
             } else {
                 None
             },
             code: if let Some(c) = &card.code {
-                Some(self.decrypt_string(c).await?)
+                Some(self.decrypt_string(c, key)?)
             } else {
                 None
             },
         })
     }
 
-    async fn decrypt_identity(
+    fn decrypt_identity(
         &self,
         identity: &CipherIdentity,
+        key: &SymmetricCryptoKey,
     ) -> Result<CipherIdentityView, VaultError> {
         Ok(CipherIdentityView {
             title: if let Some(t) = &identity.title {
-                Some(self.decrypt_string(t).await?)
+                Some(self.decrypt_string(t, key)?)
             } else {
                 None
             },
             first_name: if let Some(f) = &identity.first_name {
-                Some(self.decrypt_string(f).await?)
+                Some(self.decrypt_string(f, key)?)
             } else {
                 None
             },
             middle_name: if let Some(m) = &identity.middle_name {
-                Some(self.decrypt_string(m).await?)
+                Some(self.decrypt_string(m, key)?)
             } else {
                 None
             },
             last_name: if let Some(l) = &identity.last_name {
-                Some(self.decrypt_string(l).await?)
+                Some(self.decrypt_string(l, key)?)
             } else {
                 None
             },
             address1: if let Some(a) = &identity.address1 {
-                Some(self.decrypt_string(a).await?)
+                Some(self.decrypt_string(a, key)?)
             } else {
                 None
             },
             address2: if let Some(a) = &identity.address2 {
-                Some(self.decrypt_string(a).await?)
+                Some(self.decrypt_string(a, key)?)
             } else {
                 None
             },
             address3: if let Some(a) = &identity.address3 {
-                Some(self.decrypt_string(a).await?)
+                Some(self.decrypt_string(a, key)?)
             } else {
                 None
             },
             city: if let Some(c) = &identity.city {
-                Some(self.decrypt_string(c).await?)
+                Some(self.decrypt_string(c, key)?)
             } else {
                 None
             },
             state: if let Some(s) = &identity.state {
-                Some(self.decrypt_string(s).await?)
+                Some(self.decrypt_string(s, key)?)
             } else {
                 None
             },
             postal_code: if let Some(p) = &identity.postal_code {
-                Some(self.decrypt_string(p).await?)
+                Some(self.decrypt_string(p, key)?)
             } else {
                 None
             },
             country: if let Some(c) = &identity.country {
-                Some(self.decrypt_string(c).await?)
+                Some(self.decrypt_string(c, key)?)
             } else {
                 None
             },
             phone: if let Some(p) = &identity.phone {
-                Some(self.decrypt_string(p).await?)
+                Some(self.decrypt_string(p, key)?)
             } else {
                 None
             },
             email: if let Some(e) = &identity.email {
-                Some(self.decrypt_string(e).await?)
+                Some(self.decrypt_string(e, key)?)
             } else {
                 None
             },
             ssn: if let Some(s) = &identity.ssn {
-                Some(self.decrypt_string(s).await?)
+                Some(self.decrypt_string(s, key)?)
             } else {
                 None
             },
             username: if let Some(u) = &identity.username {
-                Some(self.decrypt_string(u).await?)
+                Some(self.decrypt_string(u, key)?)
             } else {
                 None
             },
             passport_number: if let Some(p) = &identity.passport_number {
-                Some(self.decrypt_string(p).await?)
+                Some(self.decrypt_string(p, key)?)
             } else {
                 None
             },
             license_number: if let Some(l) = &identity.license_number {
-                Some(self.decrypt_string(l).await?)
+                Some(self.decrypt_string(l, key)?)
             } else {
                 None
             },
@@ -310,18 +336,21 @@ impl CipherService {
     // ========== Encryption Methods (for write operations) ==========
 
     /// Encrypt cipher view to cipher (for API submission)
-    pub async fn encrypt_cipher(&self, cipher_view: &CipherView) -> Result<Cipher, VaultError> {
-        // Use SDK to encrypt all fields
-        let encrypted_name = self.encrypt_string(&cipher_view.name).await?;
+    pub async fn encrypt_cipher(
+        &self,
+        cipher_view: &CipherView,
+        user_key: &SymmetricCryptoKey,
+    ) -> Result<Cipher, VaultError> {
+        let encrypted_name = self.encrypt_string(&cipher_view.name, user_key)?;
 
         let encrypted_notes = if let Some(notes) = &cipher_view.notes {
-            Some(self.encrypt_string(notes).await?)
+            Some(self.encrypt_string(notes, user_key)?)
         } else {
             None
         };
 
         let encrypted_login = if let Some(login) = &cipher_view.login {
-            Some(self.encrypt_login(login).await?)
+            Some(self.encrypt_login(login, user_key)?)
         } else {
             None
         };
@@ -329,18 +358,18 @@ impl CipherService {
         let encrypted_secure_note = cipher_view.secure_note.clone();
 
         let encrypted_card = if let Some(card) = &cipher_view.card {
-            Some(self.encrypt_card(card).await?)
+            Some(self.encrypt_card(card, user_key)?)
         } else {
             None
         };
 
         let encrypted_identity = if let Some(identity) = &cipher_view.identity {
-            Some(self.encrypt_identity(identity).await?)
+            Some(self.encrypt_identity(identity, user_key)?)
         } else {
             None
         };
 
-        let encrypted_fields = self.encrypt_fields(&cipher_view.fields).await?;
+        let encrypted_fields = self.encrypt_fields(&cipher_view.fields, user_key)?;
 
         // Build encrypted cipher
         Ok(Cipher {
@@ -375,38 +404,49 @@ impl CipherService {
         })
     }
 
-    /// Encrypt a single string field (public method for folder names, etc.)
-    pub async fn encrypt_string(&self, plain_text: &str) -> Result<String, VaultError> {
-        // TODO: Use SDK client to encrypt
-        // self.sdk_client.encrypt_string(plain_text).await
-        //     .map_err(|e| VaultError::EncryptionError(e.to_string()))
+    /// Encrypt a single string field using the user key
+    pub fn encrypt_string(
+        &self,
+        plain_text: &str,
+        key: &SymmetricCryptoKey,
+    ) -> Result<String, VaultError> {
+        if plain_text.is_empty() {
+            return Ok(String::new());
+        }
 
-        // Placeholder for MVP (SDK integration)
-        // Format: "2.base64iv|base64ciphertext|base64mac"
-        Ok(format!("2.encrypted_{}", plain_text))
+        // Encrypt using the SDK
+        let enc_string: EncString = plain_text
+            .encrypt_with_key(key)
+            .map_err(|e| VaultError::EncryptionError(format!("Encryption failed: {}", e)))?;
+
+        Ok(enc_string.to_string())
     }
 
     /// Encrypt login data
-    async fn encrypt_login(&self, login: &CipherLoginView) -> Result<CipherLogin, VaultError> {
+    fn encrypt_login(
+        &self,
+        login: &CipherLoginView,
+        key: &SymmetricCryptoKey,
+    ) -> Result<CipherLogin, VaultError> {
         let encrypted_username = if let Some(username) = &login.username {
-            Some(self.encrypt_string(username).await?)
+            Some(self.encrypt_string(username, key)?)
         } else {
             None
         };
 
         let encrypted_password = if let Some(password) = &login.password {
-            Some(self.encrypt_string(password).await?)
+            Some(self.encrypt_string(password, key)?)
         } else {
             None
         };
 
         let encrypted_totp = if let Some(totp) = &login.totp {
-            Some(self.encrypt_string(totp).await?)
+            Some(self.encrypt_string(totp, key)?)
         } else {
             None
         };
 
-        let encrypted_uris = self.encrypt_uris(&login.uris).await?;
+        let encrypted_uris = self.encrypt_uris(&login.uris, key)?;
 
         Ok(CipherLogin {
             username: encrypted_username,
@@ -421,15 +461,16 @@ impl CipherService {
     }
 
     /// Encrypt URI list
-    async fn encrypt_uris(
+    fn encrypt_uris(
         &self,
         uris: &[CipherLoginUriView],
+        key: &SymmetricCryptoKey,
     ) -> Result<Vec<CipherLoginUri>, VaultError> {
         let mut encrypted_uris = Vec::new();
 
         for uri_view in uris {
             let encrypted_uri = if let Some(uri) = &uri_view.uri {
-                Some(self.encrypt_string(uri).await?)
+                Some(self.encrypt_string(uri, key)?)
             } else {
                 None
             };
@@ -444,35 +485,39 @@ impl CipherService {
     }
 
     /// Encrypt card data
-    async fn encrypt_card(&self, card: &CipherCardView) -> Result<CipherCard, VaultError> {
+    fn encrypt_card(
+        &self,
+        card: &CipherCardView,
+        key: &SymmetricCryptoKey,
+    ) -> Result<CipherCard, VaultError> {
         Ok(CipherCard {
             cardholder_name: if let Some(n) = &card.cardholder_name {
-                Some(self.encrypt_string(n).await?)
+                Some(self.encrypt_string(n, key)?)
             } else {
                 None
             },
             number: if let Some(n) = &card.number {
-                Some(self.encrypt_string(n).await?)
+                Some(self.encrypt_string(n, key)?)
             } else {
                 None
             },
             brand: if let Some(b) = &card.brand {
-                Some(self.encrypt_string(b).await?)
+                Some(self.encrypt_string(b, key)?)
             } else {
                 None
             },
             exp_month: if let Some(m) = &card.exp_month {
-                Some(self.encrypt_string(m).await?)
+                Some(self.encrypt_string(m, key)?)
             } else {
                 None
             },
             exp_year: if let Some(y) = &card.exp_year {
-                Some(self.encrypt_string(y).await?)
+                Some(self.encrypt_string(y, key)?)
             } else {
                 None
             },
             code: if let Some(c) = &card.code {
-                Some(self.encrypt_string(c).await?)
+                Some(self.encrypt_string(c, key)?)
             } else {
                 None
             },
@@ -480,93 +525,94 @@ impl CipherService {
     }
 
     /// Encrypt identity data
-    async fn encrypt_identity(
+    fn encrypt_identity(
         &self,
         identity: &CipherIdentityView,
+        key: &SymmetricCryptoKey,
     ) -> Result<CipherIdentity, VaultError> {
         Ok(CipherIdentity {
             title: if let Some(t) = &identity.title {
-                Some(self.encrypt_string(t).await?)
+                Some(self.encrypt_string(t, key)?)
             } else {
                 None
             },
             first_name: if let Some(f) = &identity.first_name {
-                Some(self.encrypt_string(f).await?)
+                Some(self.encrypt_string(f, key)?)
             } else {
                 None
             },
             middle_name: if let Some(m) = &identity.middle_name {
-                Some(self.encrypt_string(m).await?)
+                Some(self.encrypt_string(m, key)?)
             } else {
                 None
             },
             last_name: if let Some(l) = &identity.last_name {
-                Some(self.encrypt_string(l).await?)
+                Some(self.encrypt_string(l, key)?)
             } else {
                 None
             },
             address1: if let Some(a) = &identity.address1 {
-                Some(self.encrypt_string(a).await?)
+                Some(self.encrypt_string(a, key)?)
             } else {
                 None
             },
             address2: if let Some(a) = &identity.address2 {
-                Some(self.encrypt_string(a).await?)
+                Some(self.encrypt_string(a, key)?)
             } else {
                 None
             },
             address3: if let Some(a) = &identity.address3 {
-                Some(self.encrypt_string(a).await?)
+                Some(self.encrypt_string(a, key)?)
             } else {
                 None
             },
             city: if let Some(c) = &identity.city {
-                Some(self.encrypt_string(c).await?)
+                Some(self.encrypt_string(c, key)?)
             } else {
                 None
             },
             state: if let Some(s) = &identity.state {
-                Some(self.encrypt_string(s).await?)
+                Some(self.encrypt_string(s, key)?)
             } else {
                 None
             },
             postal_code: if let Some(p) = &identity.postal_code {
-                Some(self.encrypt_string(p).await?)
+                Some(self.encrypt_string(p, key)?)
             } else {
                 None
             },
             country: if let Some(c) = &identity.country {
-                Some(self.encrypt_string(c).await?)
+                Some(self.encrypt_string(c, key)?)
             } else {
                 None
             },
             phone: if let Some(p) = &identity.phone {
-                Some(self.encrypt_string(p).await?)
+                Some(self.encrypt_string(p, key)?)
             } else {
                 None
             },
             email: if let Some(e) = &identity.email {
-                Some(self.encrypt_string(e).await?)
+                Some(self.encrypt_string(e, key)?)
             } else {
                 None
             },
             ssn: if let Some(s) = &identity.ssn {
-                Some(self.encrypt_string(s).await?)
+                Some(self.encrypt_string(s, key)?)
             } else {
                 None
             },
             username: if let Some(u) = &identity.username {
-                Some(self.encrypt_string(u).await?)
+                Some(self.encrypt_string(u, key)?)
             } else {
                 None
             },
             passport_number: if let Some(p) = &identity.passport_number {
-                Some(self.encrypt_string(p).await?)
+                Some(self.encrypt_string(p, key)?)
             } else {
                 None
             },
             license_number: if let Some(l) = &identity.license_number {
-                Some(self.encrypt_string(l).await?)
+                Some(self.encrypt_string(l, key)?)
             } else {
                 None
             },
@@ -574,17 +620,18 @@ impl CipherService {
     }
 
     /// Encrypt custom fields
-    async fn encrypt_fields(
+    fn encrypt_fields(
         &self,
         fields: &[CipherFieldView],
+        key: &SymmetricCryptoKey,
     ) -> Result<Vec<CipherField>, VaultError> {
         let mut encrypted_fields = Vec::new();
 
         for field_view in fields {
             encrypted_fields.push(CipherField {
-                name: self.encrypt_string(&field_view.name).await?,
+                name: self.encrypt_string(&field_view.name, key)?,
                 value: if let Some(v) = &field_view.value {
-                    Some(self.encrypt_string(v).await?)
+                    Some(self.encrypt_string(v, key)?)
                 } else {
                     None
                 },
