@@ -519,6 +519,32 @@ impl ApiClient for BitwardenApiClient {
         Ok(data)
     }
 
+    async fn put_with_auth_no_response(&self, path: &str) -> Result<()> {
+        let url = self.build_url(path, false);
+
+        let token = self
+            .token_manager
+            .get_access_token()
+            .await?
+            .ok_or_else(|| ApiError::Authentication {
+                message: "Not authenticated".to_string(),
+                hint: "Run 'bw login' to authenticate".to_string(),
+            })?;
+
+        let request = self
+            .http_client
+            .put(&url)
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", token.expose_secret()),
+            )
+            .build()?;
+
+        let _response = self.execute_with_retry(request, true).await?;
+
+        Ok(())
+    }
+
     async fn delete_with_auth(&self, path: &str) -> Result<()> {
         let url = self.build_url(path, false);
 

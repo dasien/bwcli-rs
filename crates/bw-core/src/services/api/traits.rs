@@ -78,6 +78,11 @@ pub trait ApiClient: Send + Sync {
         T: Serialize + Send + Sync,
         R: for<'de> Deserialize<'de>;
 
+    /// Make an authenticated PUT request with no response body
+    ///
+    /// For operations that don't return data (like soft delete).
+    async fn put_with_auth_no_response(&self, path: &str) -> Result<()>;
+
     /// Make an authenticated DELETE request
     ///
     /// Deletes a resource. Returns empty result on success (204 No Content).

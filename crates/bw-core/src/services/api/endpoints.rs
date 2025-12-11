@@ -23,32 +23,32 @@ pub mod api {
     /// Ciphers endpoints
     pub mod ciphers {
         /// Base path for cipher operations (POST to create)
-        pub const BASE: &str = "/api/ciphers";
+        pub const BASE: &str = "/ciphers";
 
         /// Get cipher by ID path
         pub fn by_id(id: &str) -> String {
-            format!("/api/ciphers/{}", id)
+            format!("/ciphers/{}", id)
         }
 
         /// Soft delete cipher path
         pub fn delete(id: &str) -> String {
-            format!("/api/ciphers/{}/delete", id)
+            format!("/ciphers/{}/delete", id)
         }
 
         /// Restore cipher from trash path
         pub fn restore(id: &str) -> String {
-            format!("/api/ciphers/{}/restore", id)
+            format!("/ciphers/{}/restore", id)
         }
     }
 
     /// Folders endpoints
     pub mod folders {
         /// Base path for folder operations (POST to create)
-        pub const BASE: &str = "/api/folders";
+        pub const BASE: &str = "/folders";
 
         /// Get/update/delete folder by ID path
         pub fn by_id(id: &str) -> String {
-            format!("/api/folders/{}", id)
+            format!("/folders/{}", id)
         }
     }
 }

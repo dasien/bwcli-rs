@@ -168,16 +168,19 @@ impl WriteService {
         }
 
         // 3. Send delete to API
-        let endpoint = if permanent {
-            endpoints::api::ciphers::delete(id)
+        // Soft delete uses PUT to /ciphers/{id}/delete (moves to trash)
+        // Permanent delete uses DELETE to /ciphers/{id} (permanently removes)
+        if permanent {
+            self.api_client
+                .delete_with_auth(&endpoints::api::ciphers::by_id(id))
+                .await
+                .map_err(|e| VaultError::ApiError(e.to_string()))?;
         } else {
-            endpoints::api::ciphers::by_id(id)
-        };
-
-        self.api_client
-            .delete_with_auth(&endpoint)
-            .await
-            .map_err(|e| VaultError::ApiError(e.to_string()))?;
+            self.api_client
+                .put_with_auth_no_response(&endpoints::api::ciphers::delete(id))
+                .await
+                .map_err(|e| VaultError::ApiError(e.to_string()))?;
+        }
 
         // 4. Update cache
         if permanent {
