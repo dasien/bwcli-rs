@@ -59,7 +59,9 @@ mod tests {
 
         // Test with otpauth:// URI format
         let result = service
-            .generate_code("otpauth://totp/Test:user@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Test")
+            .generate_code(
+                "otpauth://totp/Test:user@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Test",
+            )
             .await;
         assert!(result.is_ok());
 
@@ -73,9 +75,7 @@ mod tests {
         let service = TotpService::new();
 
         // Test with steam:// URI format (Steam Guard)
-        let result = service
-            .generate_code("steam://JBSWY3DPEHPK3PXP")
-            .await;
+        let result = service.generate_code("steam://JBSWY3DPEHPK3PXP").await;
         assert!(result.is_ok());
 
         let code = result.unwrap();

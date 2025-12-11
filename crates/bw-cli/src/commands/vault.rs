@@ -1,8 +1,14 @@
 use crate::AppContext;
 use crate::GlobalArgs;
+use crate::commands::input::{parse_folder_input, parse_item_input};
+use crate::commands::templates::get_item_template;
 use crate::output::Response;
+use bw_core::models::vault::CipherView;
 use bw_core::services::storage::AccountManager;
-use bw_core::services::vault::{FieldType, ItemFilters, VaultService};
+use bw_core::services::vault::{
+    CipherService, ConfirmationService, FieldType, ItemFilters, ValidationService, VaultError,
+    VaultService, WriteService,
+};
 use clap::{Args, Subcommand};
 use std::sync::Arc;
 
@@ -347,8 +353,79 @@ fn create_vault_service(ctx: &AppContext) -> VaultService {
     )
 }
 
+// Helper to create write service
+fn create_write_service(ctx: &AppContext, no_interaction: bool) -> WriteService {
+    let account_manager = Arc::new(AccountManager::new(ctx.storage()));
+    let cipher_service = Arc::new(CipherService::new(Arc::new(ctx.sdk().clone())));
+    let validation_service = Arc::new(ValidationService::new());
+    let confirmation_service = Arc::new(ConfirmationService::new(no_interaction));
+
+    WriteService::new(
+        ctx.api_client(),
+        ctx.storage(),
+        cipher_service,
+        validation_service,
+        confirmation_service,
+        account_manager,
+    )
+}
+
+/// Merge updates into existing cipher view
+///
+/// Strategy: Update fields that are present in updates,
+/// preserve fields that are not specified (null/missing).
+fn merge_cipher_views(existing: CipherView, updates: CipherView) -> CipherView {
+    CipherView {
+        // ID must match existing
+        id: existing.id,
+
+        // These can be updated
+        organization_id: updates.organization_id.or(existing.organization_id),
+        folder_id: if updates.folder_id.is_some() {
+            updates.folder_id
+        } else {
+            existing.folder_id
+        },
+        cipher_type: updates.cipher_type, // Type can change
+        name: if updates.name.is_empty() {
+            existing.name
+        } else {
+            updates.name
+        },
+        notes: updates.notes.or(existing.notes),
+        favorite: updates.favorite,
+        collection_ids: if updates.collection_ids.is_empty() {
+            existing.collection_ids
+        } else {
+            updates.collection_ids
+        },
+
+        // Preserve metadata
+        revision_date: existing.revision_date, // WriteService updates this
+        creation_date: existing.creation_date,
+        deleted_date: existing.deleted_date,
+
+        // Type-specific data - take updates if provided
+        login: updates.login.or(existing.login),
+        secure_note: updates.secure_note.or(existing.secure_note),
+        card: updates.card.or(existing.card),
+        identity: updates.identity.or(existing.identity),
+
+        attachments: existing.attachments, // Preserve - separate management
+        fields: if updates.fields.is_empty() {
+            existing.fields
+        } else {
+            updates.fields
+        },
+    }
+}
+
 // List command implementations
-pub async fn execute_list(cmd: ListCommands, global_args: &GlobalArgs, ctx: &AppContext) -> anyhow::Result<Response> {
+pub async fn execute_list(
+    cmd: ListCommands,
+    global_args: &GlobalArgs,
+    ctx: &AppContext,
+) -> anyhow::Result<Response> {
     let vault_service = create_vault_service(ctx);
 
     match cmd {
@@ -407,7 +484,11 @@ pub async fn execute_list(cmd: ListCommands, global_args: &GlobalArgs, ctx: &App
 }
 
 // Get command implementations
-pub async fn execute_get(cmd: GetCommands, global_args: &GlobalArgs, ctx: &AppContext) -> anyhow::Result<Response> {
+pub async fn execute_get(
+    cmd: GetCommands,
+    global_args: &GlobalArgs,
+    ctx: &AppContext,
+) -> anyhow::Result<Response> {
     let vault_service = create_vault_service(ctx);
 
     match cmd {
@@ -488,49 +569,324 @@ pub async fn execute_get(cmd: GetCommands, global_args: &GlobalArgs, ctx: &AppCo
             }
         }
 
+        GetCommands::Template(template_cmd) => {
+            match get_item_template(&template_cmd.template_type) {
+                Ok(template) => {
+                    if global_args.raw {
+                        // Raw output: pretty-printed JSON
+                        match serde_json::to_string_pretty(&template) {
+                            Ok(json) => {
+                                println!("{}", json);
+                                Ok(Response::success_message(""))
+                            }
+                            Err(e) => Ok(Response::error(e.to_string())),
+                        }
+                    } else {
+                        Ok(Response::success(template))
+                    }
+                }
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+
+        GetCommands::Folder(folder_cmd) => {
+            let session = get_session(global_args)?;
+            let folders = vault_service.list_folders(None, session).await;
+            match folders {
+                Ok(folders) => {
+                    if let Some(folder) = folders.iter().find(|f| f.id == folder_cmd.id) {
+                        Ok(Response::success(folder.clone()))
+                    } else {
+                        Ok(Response::error(format!(
+                            "Folder not found: {}",
+                            folder_cmd.id
+                        )))
+                    }
+                }
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+
         _ => Ok(Response::error("Not yet implemented")),
     }
 }
 
-// Stub implementations for write operations (not in scope for this enhancement)
+// Create command implementations
 pub async fn execute_create(
-    _cmd: CreateCommands,
-    _global_args: &GlobalArgs,
-    _ctx: &AppContext,
+    cmd: CreateCommands,
+    global_args: &GlobalArgs,
+    ctx: &AppContext,
 ) -> anyhow::Result<Response> {
-    Ok(Response::error("Not yet implemented"))
+    match cmd {
+        CreateCommands::Item(item_cmd) => {
+            let session = get_session(global_args)?;
+
+            // 1. Parse input (base64/JSON/stdin)
+            let cipher_view = match parse_item_input(&item_cmd.json) {
+                Ok(view) => view,
+                Err(e) => return Ok(Response::error(format!("Invalid input: {}", e))),
+            };
+
+            // 2. Create via WriteService
+            let write_service = create_write_service(ctx, global_args.nointeraction);
+            match write_service.create_cipher(cipher_view, session).await {
+                Ok(created) => {
+                    // 3. Return decrypted view
+                    let vault_service = create_vault_service(ctx);
+                    match vault_service.get_item(&created.id, session).await {
+                        Ok(decrypted) => Ok(Response::success(decrypted)),
+                        Err(e) => Ok(Response::error(e.to_string())),
+                    }
+                }
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+
+        CreateCommands::Folder(folder_cmd) => {
+            let session = get_session(global_args)?;
+
+            // 1. Parse folder input
+            let folder_input = match parse_folder_input(&folder_cmd.json) {
+                Ok(input) => input,
+                Err(e) => return Ok(Response::error(format!("Invalid input: {}", e))),
+            };
+
+            // 2. Create via WriteService
+            let write_service = create_write_service(ctx, global_args.nointeraction);
+            match write_service
+                .create_folder(folder_input.name, session)
+                .await
+            {
+                Ok(created) => {
+                    // 3. Return decrypted view
+                    let vault_service = create_vault_service(ctx);
+                    match vault_service.list_folders(None, session).await {
+                        Ok(folders) => {
+                            if let Some(folder) = folders.iter().find(|f| f.id == created.id) {
+                                Ok(Response::success(folder.clone()))
+                            } else {
+                                Ok(Response::error("Folder created but not found in cache"))
+                            }
+                        }
+                        Err(e) => Ok(Response::error(e.to_string())),
+                    }
+                }
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+
+        CreateCommands::Attachment(_) | CreateCommands::OrgCollection(_) => {
+            Ok(Response::error("Not yet implemented"))
+        }
+    }
 }
 
+// Edit command implementations
 pub async fn execute_edit(
-    _cmd: EditCommands,
-    _global_args: &GlobalArgs,
-    _ctx: &AppContext,
+    cmd: EditCommands,
+    global_args: &GlobalArgs,
+    ctx: &AppContext,
 ) -> anyhow::Result<Response> {
-    Ok(Response::error("Not yet implemented"))
+    match cmd {
+        EditCommands::Item(item_cmd) => {
+            let session = get_session(global_args)?;
+            let vault_service = create_vault_service(ctx);
+
+            // 1. Get existing item
+            let existing = match vault_service.get_item(&item_cmd.id, session).await {
+                Ok(item) => item,
+                Err(VaultError::ItemNotFound) => {
+                    return Ok(Response::error(format!("Item not found: {}", item_cmd.id)));
+                }
+                Err(e) => return Ok(Response::error(e.to_string())),
+            };
+
+            // 2. Check not deleted
+            if existing.deleted_date.is_some() {
+                return Ok(Response::error(
+                    "Cannot edit items in trash. Use 'bw restore' first.",
+                ));
+            }
+
+            // 3. Parse input and merge
+            let updates = match parse_item_input(&item_cmd.json) {
+                Ok(view) => view,
+                Err(e) => return Ok(Response::error(format!("Invalid input: {}", e))),
+            };
+            let merged = merge_cipher_views(existing, updates);
+
+            // 4. Update via WriteService
+            let write_service = create_write_service(ctx, global_args.nointeraction);
+            match write_service
+                .update_cipher(&item_cmd.id, merged, session)
+                .await
+            {
+                Ok(updated) => {
+                    // 5. Return decrypted view
+                    match vault_service.get_item(&updated.id, session).await {
+                        Ok(decrypted) => Ok(Response::success(decrypted)),
+                        Err(e) => Ok(Response::error(e.to_string())),
+                    }
+                }
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+
+        EditCommands::Folder(folder_cmd) => {
+            let session = get_session(global_args)?;
+
+            // 1. Parse folder input
+            let folder_input = match parse_folder_input(&folder_cmd.json) {
+                Ok(input) => input,
+                Err(e) => return Ok(Response::error(format!("Invalid input: {}", e))),
+            };
+
+            // 2. Update via WriteService
+            let write_service = create_write_service(ctx, global_args.nointeraction);
+            match write_service
+                .update_folder(&folder_cmd.id, folder_input.name, session)
+                .await
+            {
+                Ok(_) => {
+                    // 3. Return decrypted view
+                    let vault_service = create_vault_service(ctx);
+                    match vault_service.list_folders(None, session).await {
+                        Ok(folders) => {
+                            if let Some(folder) = folders.iter().find(|f| f.id == folder_cmd.id) {
+                                Ok(Response::success(folder.clone()))
+                            } else {
+                                Ok(Response::error("Folder updated but not found in cache"))
+                            }
+                        }
+                        Err(e) => Ok(Response::error(e.to_string())),
+                    }
+                }
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+
+        EditCommands::ItemCollections(_) | EditCommands::OrgCollection(_) => {
+            Ok(Response::error("Not yet implemented"))
+        }
+    }
 }
 
+// Delete command implementations
 pub async fn execute_delete(
-    _cmd: DeleteCommands,
-    _global_args: &GlobalArgs,
-    _ctx: &AppContext,
+    cmd: DeleteCommands,
+    global_args: &GlobalArgs,
+    ctx: &AppContext,
 ) -> anyhow::Result<Response> {
-    Ok(Response::error("Not yet implemented"))
+    // Validate session early for consistent error messages
+    // (even though delete operations don't need encryption)
+    let _session = get_session(global_args)?;
+
+    match cmd {
+        DeleteCommands::Item(item_cmd) => {
+            let write_service = create_write_service(ctx, global_args.nointeraction);
+
+            match write_service
+                .delete_cipher(&item_cmd.id, item_cmd.permanent, global_args.nointeraction)
+                .await
+            {
+                Ok(_) => {
+                    let msg = if item_cmd.permanent {
+                        "Item permanently deleted"
+                    } else {
+                        "Item moved to trash"
+                    };
+                    Ok(Response::success_message(msg))
+                }
+                Err(VaultError::OperationCancelled) => {
+                    Ok(Response::success_message("Deletion cancelled"))
+                }
+                Err(VaultError::ItemNotFound) => {
+                    Ok(Response::error(format!("Item not found: {}", item_cmd.id)))
+                }
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+
+        DeleteCommands::Folder(folder_cmd) => {
+            let write_service = create_write_service(ctx, global_args.nointeraction);
+
+            match write_service.delete_folder(&folder_cmd.id).await {
+                Ok(_) => Ok(Response::success_message("Folder deleted")),
+                Err(VaultError::FolderNotFound) => Ok(Response::error(format!(
+                    "Folder not found: {}",
+                    folder_cmd.id
+                ))),
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+
+        DeleteCommands::Attachment(_) | DeleteCommands::OrgCollection(_) => {
+            Ok(Response::error("Not yet implemented"))
+        }
+    }
 }
 
+// Restore command implementation
 pub async fn execute_restore(
-    _cmd: RestoreCommand,
-    _global_args: &GlobalArgs,
-    _ctx: &AppContext,
+    cmd: RestoreCommand,
+    global_args: &GlobalArgs,
+    ctx: &AppContext,
 ) -> anyhow::Result<Response> {
-    Ok(Response::error("Not yet implemented"))
+    let session = get_session(global_args)?;
+    let write_service = create_write_service(ctx, global_args.nointeraction);
+
+    match write_service.restore_cipher(&cmd.id).await {
+        Ok(restored) => {
+            // Return decrypted view
+            let vault_service = create_vault_service(ctx);
+            match vault_service.get_item(&restored.id, session).await {
+                Ok(decrypted) => Ok(Response::success(decrypted)),
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+        Err(VaultError::ItemNotDeleted) => Ok(Response::error("Item is not in trash")),
+        Err(VaultError::ItemNotFound) => Ok(Response::error(format!("Item not found: {}", cmd.id))),
+        Err(e) => Ok(Response::error(e.to_string())),
+    }
 }
 
+// Move command implementation
 pub async fn execute_move(
-    _cmd: MoveCommand,
-    _global_args: &GlobalArgs,
-    _ctx: &AppContext,
+    cmd: MoveCommand,
+    global_args: &GlobalArgs,
+    ctx: &AppContext,
 ) -> anyhow::Result<Response> {
-    Ok(Response::error("Not yet implemented"))
+    let session = get_session(global_args)?;
+    let write_service = create_write_service(ctx, global_args.nointeraction);
+
+    // Handle "null" string to remove from folder
+    let folder_id = if cmd.folder_id == "null" {
+        None
+    } else {
+        Some(cmd.folder_id.as_str())
+    };
+
+    match write_service
+        .move_cipher(&cmd.item_id, folder_id, session)
+        .await
+    {
+        Ok(moved) => {
+            // Return decrypted view
+            let vault_service = create_vault_service(ctx);
+            match vault_service.get_item(&moved.id, session).await {
+                Ok(decrypted) => Ok(Response::success(decrypted)),
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+        Err(VaultError::ItemNotFound) => {
+            Ok(Response::error(format!("Item not found: {}", cmd.item_id)))
+        }
+        Err(VaultError::FolderNotFound) => Ok(Response::error(format!(
+            "Folder not found: {}",
+            cmd.folder_id
+        ))),
+        Err(e) => Ok(Response::error(e.to_string())),
+    }
 }
 
 pub async fn execute_confirm(

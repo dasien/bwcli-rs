@@ -20,13 +20,14 @@ pub async fn execute_password_login(
     let password = input::require_password(cmd.password, global_args, None)?;
 
     // Build 2FA data if provided
-    let two_factor = cmd.code.as_ref().map(|code| {
-        bw_core::services::auth::TwoFactorData {
+    let two_factor = cmd
+        .code
+        .as_ref()
+        .map(|code| bw_core::services::auth::TwoFactorData {
             token: code.clone(),
             provider: cmd.method.unwrap_or(TwoFactorMethod::Authenticator as u8),
             remember: false,
-        }
-    });
+        });
 
     // Execute login (first attempt without device verification OTP)
     let result = auth_service
@@ -88,8 +89,18 @@ pub async fn execute_api_key_login(
     let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
 
     // Gather inputs
-    let client_id = input::require_string(cmd.client_id, global_args, "Client ID", prompts::prompt_client_id)?;
-    let client_secret = input::require_secret(cmd.client_secret, global_args, "Client secret", prompts::prompt_client_secret)?;
+    let client_id = input::require_string(
+        cmd.client_id,
+        global_args,
+        "Client ID",
+        prompts::prompt_client_id,
+    )?;
+    let client_secret = input::require_secret(
+        cmd.client_secret,
+        global_args,
+        "Client secret",
+        prompts::prompt_client_secret,
+    )?;
 
     // Execute login
     let result = auth_service
@@ -107,4 +118,3 @@ pub async fn execute_api_key_login(
         result.session_key, result.session_key, result.session_key
     )))
 }
-

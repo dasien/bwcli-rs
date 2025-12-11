@@ -35,7 +35,8 @@ impl AppContext {
         storage_path: Option<std::path::PathBuf>,
         timeout_seconds: Option<u64>,
     ) -> Result<Self> {
-        let container = ServiceContainer::new(api_url, identity_url, storage_path, timeout_seconds)?;
+        let container =
+            ServiceContainer::new(api_url, identity_url, storage_path, timeout_seconds)?;
         Ok(Self {
             container: Arc::new(container),
         })

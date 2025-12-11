@@ -91,7 +91,9 @@ pub async fn execute_login(
         AuthCommands::Password(password_cmd) => {
             execute_password_login(password_cmd, global_args, ctx).await
         }
-        AuthCommands::ApiKey(apikey_cmd) => execute_api_key_login(apikey_cmd, global_args, ctx).await,
+        AuthCommands::ApiKey(apikey_cmd) => {
+            execute_api_key_login(apikey_cmd, global_args, ctx).await
+        }
         AuthCommands::Sso(_) => Ok(Response::error(
             "SSO login is not yet implemented. It will be added in a future release.",
         )),

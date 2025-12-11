@@ -190,7 +190,9 @@ impl TokenManager {
         let access_key = StorageKey::UserAccessToken.format(Some(user_id));
         let refresh_key = StorageKey::UserRefreshToken.format(Some(user_id));
         storage.set(&access_key, &access_token.to_string()).await?;
-        storage.set(&refresh_key, &refresh_token.to_string()).await?;
+        storage
+            .set(&refresh_key, &refresh_token.to_string())
+            .await?;
         Ok(())
     }
 

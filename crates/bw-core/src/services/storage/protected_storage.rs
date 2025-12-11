@@ -5,7 +5,9 @@
 //! storage mechanism.
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use bitwarden_crypto::{EncString, KeyDecryptable, KeyEncryptable, OctetStreamBytes, SymmetricCryptoKey};
+use bitwarden_crypto::{
+    EncString, KeyDecryptable, KeyEncryptable, OctetStreamBytes, SymmetricCryptoKey,
+};
 use thiserror::Error;
 
 /// Prefix for protected storage keys
@@ -139,9 +141,9 @@ pub fn decrypt_protected_string(
     })?;
 
     // Decrypt using the session key
-    enc_string.decrypt_with_key(key).map_err(|e| {
-        ProtectedStorageError::DecryptionFailed(format!("Decryption failed: {}", e))
-    })
+    enc_string
+        .decrypt_with_key(key)
+        .map_err(|e| ProtectedStorageError::DecryptionFailed(format!("Decryption failed: {}", e)))
 }
 
 /// Encrypt raw bytes using a session key
@@ -200,9 +202,9 @@ pub fn decrypt_protected_bytes(
     })?;
 
     // Decrypt using the session key - returns Vec<u8>
-    enc_string.decrypt_with_key(key).map_err(|e| {
-        ProtectedStorageError::DecryptionFailed(format!("Decryption failed: {}", e))
-    })
+    enc_string
+        .decrypt_with_key(key)
+        .map_err(|e| ProtectedStorageError::DecryptionFailed(format!("Decryption failed: {}", e)))
 }
 
 /// Encrypt a user key with a session key for protected storage
@@ -347,8 +349,8 @@ mod tests {
         let plain_text = "Secret data";
 
         // Encrypt with session_key
-        let encrypted =
-            encrypt_protected_string(plain_text, &session_key).expect("Should encrypt successfully");
+        let encrypted = encrypt_protected_string(plain_text, &session_key)
+            .expect("Should encrypt successfully");
 
         // Try to decrypt with wrong_key
         let result = decrypt_protected_string(&encrypted, &wrong_key);
@@ -385,12 +387,12 @@ mod tests {
         let plain_bytes: &[u8] = b"";
 
         // Encrypt
-        let encrypted = encrypt_protected_bytes(plain_bytes, &session_key)
-            .expect("Should encrypt empty bytes");
+        let encrypted =
+            encrypt_protected_bytes(plain_bytes, &session_key).expect("Should encrypt empty bytes");
 
         // Decrypt
-        let decrypted = decrypt_protected_bytes(&encrypted, &session_key)
-            .expect("Should decrypt empty bytes");
+        let decrypted =
+            decrypt_protected_bytes(&encrypted, &session_key).expect("Should decrypt empty bytes");
 
         assert_eq!(plain_bytes, decrypted.as_slice());
     }

@@ -17,7 +17,11 @@ pub struct SyncCommand {
     pub last: bool,
 }
 
-pub async fn execute_sync(cmd: SyncCommand, _global_args: &GlobalArgs, ctx: &AppContext) -> anyhow::Result<Response> {
+pub async fn execute_sync(
+    cmd: SyncCommand,
+    _global_args: &GlobalArgs,
+    ctx: &AppContext,
+) -> anyhow::Result<Response> {
     // Use services from context
     let account_manager = Arc::new(AccountManager::new(ctx.storage()));
 

@@ -7,7 +7,7 @@ use crate::models::{
     state::{KdfConfig, KdfType},
 };
 use crate::services::{
-    api::{endpoints, ApiClient, BitwardenApiClient},
+    api::{ApiClient, BitwardenApiClient, endpoints},
     auth::{errors::AuthError, session_manager::SessionManager},
     crypto,
     storage::{
@@ -513,9 +513,7 @@ impl AuthService {
         // Debug: log non-sensitive request metadata
         debug!(
             "Login request: device_type={}, device_name={}, device_id={}",
-            device_info.device_type,
-            device_info.device_name,
-            device_info.device_identifier,
+            device_info.device_type, device_info.device_name, device_info.device_identifier,
         );
 
         self.api_client

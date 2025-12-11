@@ -2,12 +2,12 @@
 //!
 //! Tests the authentication service with mock HTTP server and real storage
 
+use bitwarden_crypto::{Kdf, MasterKey};
 use bw_core::services::{
     api::{BitwardenApiClient, Environment},
     auth::{AuthError, AuthService},
     storage::{JsonFileStorage, Storage, StorageKey},
 };
-use bitwarden_crypto::{Kdf, MasterKey};
 use secrecy::Secret;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -32,7 +32,8 @@ fn generate_test_encrypted_user_key(password: &str, email: &str, iterations: u32
         iterations: NonZeroU32::new(iterations).unwrap(),
     };
     let master_key = MasterKey::derive(password, email, &kdf).expect("Failed to derive master key");
-    let (_user_key, encrypted_user_key) = master_key.make_user_key().expect("Failed to make user key");
+    let (_user_key, encrypted_user_key) =
+        master_key.make_user_key().expect("Failed to make user key");
     encrypted_user_key.to_string()
 }
 
@@ -108,7 +109,8 @@ async fn setup_login_mocks(mock_server: &MockServer, encrypted_user_key: &str) {
 #[tokio::test]
 async fn test_login_with_password_success() {
     // Generate a valid encrypted user key for our test credentials
-    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    let encrypted_user_key =
+        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     // Setup mock server
     let mock_server = MockServer::start().await;
@@ -253,7 +255,8 @@ async fn test_login_with_api_key_success() {
 #[tokio::test]
 async fn test_unlock_success() {
     // Generate a valid encrypted user key for our test credentials
-    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    let encrypted_user_key =
+        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     let mock_server = MockServer::start().await;
     setup_login_mocks(&mock_server, &encrypted_user_key).await;
@@ -265,7 +268,11 @@ async fn test_unlock_success() {
     let login_result = auth_service
         .login_with_password(TEST_EMAIL, password.clone(), None, None)
         .await;
-    assert!(login_result.is_ok(), "Login should succeed: {:?}", login_result.err());
+    assert!(
+        login_result.is_ok(),
+        "Login should succeed: {:?}",
+        login_result.err()
+    );
 
     // Now test unlock with the same password
     let unlock_result = auth_service.unlock(password).await;
@@ -303,7 +310,8 @@ async fn test_unlock_not_logged_in() {
 #[tokio::test]
 async fn test_unlock_wrong_password() {
     // Generate encrypted user key with the correct password
-    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    let encrypted_user_key =
+        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     let mock_server = MockServer::start().await;
     setup_login_mocks(&mock_server, &encrypted_user_key).await;
@@ -319,7 +327,11 @@ async fn test_unlock_wrong_password() {
             None,
         )
         .await;
-    assert!(login_result.is_ok(), "Login should succeed: {:?}", login_result.err());
+    assert!(
+        login_result.is_ok(),
+        "Login should succeed: {:?}",
+        login_result.err()
+    );
 
     // Try to unlock with wrong password
     let unlock_result = auth_service
@@ -339,7 +351,8 @@ async fn test_unlock_wrong_password() {
 #[tokio::test]
 async fn test_lock() {
     // Generate a valid encrypted user key for our test credentials
-    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    let encrypted_user_key =
+        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     let mock_server = MockServer::start().await;
     setup_login_mocks(&mock_server, &encrypted_user_key).await;
@@ -355,7 +368,11 @@ async fn test_lock() {
             None,
         )
         .await;
-    assert!(login_result.is_ok(), "Login should succeed: {:?}", login_result.err());
+    assert!(
+        login_result.is_ok(),
+        "Login should succeed: {:?}",
+        login_result.err()
+    );
 
     // Lock should succeed
     let result = auth_service.lock().await;
@@ -365,7 +382,8 @@ async fn test_lock() {
 #[tokio::test]
 async fn test_logout_success() {
     // Generate a valid encrypted user key for our test credentials
-    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    let encrypted_user_key =
+        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     let mock_server = MockServer::start().await;
     setup_login_mocks(&mock_server, &encrypted_user_key).await;
@@ -381,7 +399,11 @@ async fn test_logout_success() {
             None,
         )
         .await;
-    assert!(login_result.is_ok(), "Login should succeed: {:?}", login_result.err());
+    assert!(
+        login_result.is_ok(),
+        "Login should succeed: {:?}",
+        login_result.err()
+    );
 
     // Verify data is stored
     {
@@ -393,7 +415,11 @@ async fn test_logout_success() {
 
     // Execute logout
     let logout_result = auth_service.logout().await;
-    assert!(logout_result.is_ok(), "Logout should succeed: {:?}", logout_result.err());
+    assert!(
+        logout_result.is_ok(),
+        "Logout should succeed: {:?}",
+        logout_result.err()
+    );
 
     // Verify tokens are cleared (set to null)
     {
@@ -412,7 +438,8 @@ async fn test_logout_success() {
 #[tokio::test]
 async fn test_session_key_format() {
     // Generate a valid encrypted user key for our test credentials
-    let encrypted_user_key = generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    let encrypted_user_key =
+        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     let mock_server = MockServer::start().await;
     setup_login_mocks(&mock_server, &encrypted_user_key).await;

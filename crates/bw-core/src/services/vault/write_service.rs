@@ -8,7 +8,7 @@
 
 use super::{CipherService, ConfirmationService, ValidationService, VaultError};
 use crate::models::vault::{Cipher, CipherRequest, CipherView, Folder, FolderRequest, VaultData};
-use crate::services::api::{endpoints, ApiClient, BitwardenApiClient};
+use crate::services::api::{ApiClient, BitwardenApiClient, endpoints};
 use crate::services::key_service::KeyService;
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage};
 use bitwarden_crypto::SymmetricCryptoKey;
@@ -63,14 +63,15 @@ impl WriteService {
         mut cipher_view: CipherView,
         session: &str,
     ) -> Result<Cipher, VaultError> {
-        // Get user key for encryption
-        let user_key = self.get_user_key(session).await?;
-
-        // 1. Validate input structure
+        // 1. Validate input structure BEFORE attempting key retrieval
+        // This ensures validation errors are returned even with invalid sessions
         self.validation_service
             .validate_cipher_create(&cipher_view)?;
 
-        // 2. Generate ID if not present
+        // 2. Get user key for encryption (only after validation passes)
+        let user_key = self.get_user_key(session).await?;
+
+        // 3. Generate ID if not present
         if cipher_view.id.is_empty() {
             cipher_view.id = uuid::Uuid::new_v4().to_string();
         }
@@ -82,23 +83,23 @@ impl WriteService {
             cipher_view.creation_date = Some(now);
         }
 
-        // 3. Encrypt using SDK
+        // 4. Encrypt using SDK
         let encrypted = self
             .cipher_service
             .encrypt_cipher(&cipher_view, &user_key)
             .await?;
 
-        // 4. Convert to request format
+        // 5. Convert to request format
         let request = CipherRequest::from(encrypted.clone());
 
-        // 5. Send to API
+        // 6. Send to API
         let created: Cipher = self
             .api_client
             .post_with_auth(endpoints::api::ciphers::BASE, &request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
-        // 6. Update local cache (atomic)
+        // 7. Update local cache (atomic)
         self.add_cipher_to_cache(&created).await?;
 
         Ok(created)
@@ -111,39 +112,39 @@ impl WriteService {
         mut cipher_view: CipherView,
         session: &str,
     ) -> Result<Cipher, VaultError> {
-        // Get user key for encryption
-        let user_key = self.get_user_key(session).await?;
-
-        // 1. Validate item exists
+        // 1. Validate item exists first
         self.validate_cipher_exists(id).await?;
 
         // 2. Ensure ID matches
         cipher_view.id = id.to_string();
 
-        // 3. Validate update structure
+        // 3. Validate update structure BEFORE attempting key retrieval
         self.validation_service
             .validate_cipher_update(&cipher_view)?;
 
-        // 4. Update timestamp
+        // 4. Get user key for encryption (only after validation passes)
+        let user_key = self.get_user_key(session).await?;
+
+        // 5. Update timestamp
         cipher_view.revision_date = Utc::now().to_rfc3339();
 
-        // 5. Encrypt using SDK
+        // 6. Encrypt using SDK
         let encrypted = self
             .cipher_service
             .encrypt_cipher(&cipher_view, &user_key)
             .await?;
 
-        // 6. Convert to request format
+        // 7. Convert to request format
         let request = CipherRequest::from(encrypted);
 
-        // 7. Send to API
+        // 8. Send to API
         let updated: Cipher = self
             .api_client
             .put_with_auth(&endpoints::api::ciphers::by_id(id), &request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
-        // 8. Update cache atomically
+        // 9. Update cache atomically
         self.update_cipher_in_cache(&updated).await?;
 
         Ok(updated)
@@ -217,10 +218,7 @@ impl WriteService {
         folder_id: Option<&str>,
         session: &str,
     ) -> Result<Cipher, VaultError> {
-        // Get user key for decryption/encryption
-        let user_key = self.get_user_key(session).await?;
-
-        // 1. Validate cipher exists
+        // 1. Validate cipher exists first
         self.validate_cipher_exists(cipher_id).await?;
 
         // 2. Validate folder exists if specified
@@ -228,17 +226,20 @@ impl WriteService {
             self.validate_folder_exists(fid).await?;
         }
 
-        // 3. Get current cipher
+        // 3. Get user key for decryption/encryption (only after validation passes)
+        let user_key = self.get_user_key(session).await?;
+
+        // 4. Get current cipher
         let cipher = self.get_cipher(cipher_id).await?;
 
-        // 4. Decrypt, update folder, re-encrypt
+        // 5. Decrypt, update folder, re-encrypt
         let mut cipher_view = self
             .cipher_service
             .decrypt_cipher(&cipher, &user_key)
             .await?;
         cipher_view.folder_id = folder_id.map(String::from);
 
-        // 5. Update via API
+        // 6. Update via API
         self.update_cipher(cipher_id, cipher_view, session).await
     }
 
@@ -246,16 +247,16 @@ impl WriteService {
 
     /// Create folder
     pub async fn create_folder(&self, name: String, session: &str) -> Result<Folder, VaultError> {
-        // Get user key for encryption
-        let user_key = self.get_user_key(session).await?;
-
-        // 1. Validate name
+        // 1. Validate name BEFORE attempting key retrieval
         self.validation_service.validate_folder_name(&name)?;
 
-        // 2. Encrypt folder name using SDK
+        // 2. Get user key for encryption (only after validation passes)
+        let user_key = self.get_user_key(session).await?;
+
+        // 3. Encrypt folder name using SDK
         let encrypted_name = self.cipher_service.encrypt_string(&name, &user_key)?;
 
-        // 3. Send to API
+        // 4. Send to API
         let folder_request = FolderRequest {
             name: encrypted_name,
         };
@@ -265,7 +266,7 @@ impl WriteService {
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
-        // 4. Update cache
+        // 5. Update cache
         self.add_folder_to_cache(&created).await?;
 
         Ok(created)
@@ -278,19 +279,19 @@ impl WriteService {
         name: String,
         session: &str,
     ) -> Result<Folder, VaultError> {
-        // Get user key for encryption
-        let user_key = self.get_user_key(session).await?;
-
-        // 1. Validate folder exists
+        // 1. Validate folder exists first
         self.validate_folder_exists(id).await?;
 
-        // 2. Validate name
+        // 2. Validate name BEFORE attempting key retrieval
         self.validation_service.validate_folder_name(&name)?;
 
-        // 3. Encrypt folder name
+        // 3. Get user key for encryption (only after validation passes)
+        let user_key = self.get_user_key(session).await?;
+
+        // 4. Encrypt folder name
         let encrypted_name = self.cipher_service.encrypt_string(&name, &user_key)?;
 
-        // 4. Send to API
+        // 5. Send to API
         let folder_request = FolderRequest {
             name: encrypted_name,
         };
@@ -300,7 +301,7 @@ impl WriteService {
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
-        // 5. Update cache
+        // 6. Update cache
         self.update_folder_in_cache(&updated).await?;
 
         Ok(updated)

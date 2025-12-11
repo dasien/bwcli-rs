@@ -324,9 +324,7 @@ async fn test_create_folder_rejects_name_too_long() {
         account_manager,
     );
 
-    let result = write_service
-        .create_folder("a".repeat(1001), "dummy")
-        .await;
+    let result = write_service.create_folder("a".repeat(1001), "dummy").await;
 
     // Should fail validation
     assert!(result.is_err());

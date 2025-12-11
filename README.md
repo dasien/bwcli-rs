@@ -93,7 +93,7 @@ This project is in active development. Currently implemented:
 - ✅ Vault sync from server
 - ✅ Vault read commands (list, get, TOTP)
 - ✅ Password/passphrase generation
-- 🚧 Vault write commands (create, edit, delete)
+- ✅ Vault write commands (create, edit, delete, restore, move)
 - 🚧 Send commands
 - 🚧 Import/export
 

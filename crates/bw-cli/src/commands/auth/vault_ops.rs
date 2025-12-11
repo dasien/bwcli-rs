@@ -6,7 +6,11 @@ use anyhow::Result;
 use bw_core::services::auth::AuthService;
 
 /// Execute vault unlock
-pub async fn execute_unlock(cmd: UnlockCommand, global_args: &GlobalArgs, ctx: &AppContext) -> Result<Response> {
+pub async fn execute_unlock(
+    cmd: UnlockCommand,
+    global_args: &GlobalArgs,
+    ctx: &AppContext,
+) -> Result<Response> {
     // Use services from context
     let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
 
@@ -27,7 +31,11 @@ pub async fn execute_unlock(cmd: UnlockCommand, global_args: &GlobalArgs, ctx: &
 }
 
 /// Execute vault lock
-pub async fn execute_lock(_cmd: LockCommand, _global_args: &GlobalArgs, ctx: &AppContext) -> Result<Response> {
+pub async fn execute_lock(
+    _cmd: LockCommand,
+    _global_args: &GlobalArgs,
+    ctx: &AppContext,
+) -> Result<Response> {
     // Use services from context
     let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
 
@@ -38,7 +46,11 @@ pub async fn execute_lock(_cmd: LockCommand, _global_args: &GlobalArgs, ctx: &Ap
 }
 
 /// Execute logout
-pub async fn execute_logout(_cmd: LogoutCommand, _global_args: &GlobalArgs, ctx: &AppContext) -> Result<Response> {
+pub async fn execute_logout(
+    _cmd: LogoutCommand,
+    _global_args: &GlobalArgs,
+    ctx: &AppContext,
+) -> Result<Response> {
     // Use services from context
     let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
 
@@ -47,4 +59,3 @@ pub async fn execute_logout(_cmd: LogoutCommand, _global_args: &GlobalArgs, ctx:
 
     Ok(Response::success("You have been logged out."))
 }
-

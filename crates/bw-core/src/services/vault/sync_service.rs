@@ -4,7 +4,7 @@
 
 use super::errors::VaultError;
 use crate::models::vault::{SyncResponse, VaultData};
-use crate::services::api::{endpoints, ApiClient, BitwardenApiClient};
+use crate::services::api::{ApiClient, BitwardenApiClient, endpoints};
 use crate::services::storage::{JsonFileStorage, Storage};
 use std::sync::Arc;
 use tokio::sync::Mutex;
