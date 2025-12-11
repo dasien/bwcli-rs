@@ -12,16 +12,20 @@
 //! Write operations require a session key for encryption - tests that need
 //! encryption pass a dummy session key.
 
-use bw_core::models::vault::{CipherLoginView, CipherType, CipherView, VaultData};
+use bw_core::models::vault::{Cipher, CipherLoginView, CipherType, CipherView, Folder};
 use bw_core::services::api::{BitwardenApiClient, Environment};
 use bw_core::services::create_sdk_client;
-use bw_core::services::storage::{AccountManager, JsonFileStorage, Storage};
+use bw_core::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
 use bw_core::services::vault::{
     CipherService, ConfirmationService, ValidationService, VaultError, WriteService,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
+
+// Test user ID for setting up storage
+const TEST_USER_ID: &str = "test-user-12345";
 
 // ============================================================================
 // Test Helpers
@@ -65,16 +69,59 @@ async fn setup_test_environment() -> (
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().to_path_buf();
 
-    // Create storage and initialize with empty vault data
+    // Create storage and initialize with empty vault data using flat storage format
     let mut storage = JsonFileStorage::new(Some(storage_path.clone())).unwrap();
-    let vault_data = VaultData {
-        ciphers: vec![],
-        folders: vec![],
-        collections: vec![],
-        organizations: vec![],
-        last_sync: chrono::Utc::now().to_rfc3339(),
-    };
-    storage.set("vaultData", &vault_data).await.unwrap();
+
+    // Set active user ID
+    storage
+        .set(
+            &StorageKey::GlobalActiveAccountId.format(None),
+            &TEST_USER_ID.to_string(),
+        )
+        .await
+        .unwrap();
+
+    // Initialize vault data using flat storage keys (HashMap format like TypeScript CLI)
+    let empty_ciphers: HashMap<String, Cipher> = HashMap::new();
+    let empty_folders: HashMap<String, Folder> = HashMap::new();
+    let empty_collections: HashMap<String, serde_json::Value> = HashMap::new();
+    let empty_organizations: HashMap<String, serde_json::Value> = HashMap::new();
+
+    storage
+        .set(
+            &StorageKey::UserCiphers.format(Some(TEST_USER_ID)),
+            &empty_ciphers,
+        )
+        .await
+        .unwrap();
+    storage
+        .set(
+            &StorageKey::UserFolders.format(Some(TEST_USER_ID)),
+            &empty_folders,
+        )
+        .await
+        .unwrap();
+    storage
+        .set(
+            &StorageKey::UserCollections.format(Some(TEST_USER_ID)),
+            &empty_collections,
+        )
+        .await
+        .unwrap();
+    storage
+        .set(
+            &StorageKey::UserOrganizations.format(Some(TEST_USER_ID)),
+            &empty_organizations,
+        )
+        .await
+        .unwrap();
+    storage
+        .set(
+            &StorageKey::UserLastSync.format(Some(TEST_USER_ID)),
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .await
+        .unwrap();
 
     let storage = Arc::new(Mutex::new(storage));
 

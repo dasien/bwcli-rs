@@ -3,6 +3,7 @@
 //! Provides efficient filtering without requiring full decryption.
 
 use crate::models::vault::{Cipher, CollectionView, FolderView};
+use std::collections::HashMap;
 
 /// Item filter options for list operations
 #[derive(Debug, Default, Clone)]
@@ -27,21 +28,23 @@ impl SearchService {
 
     /// Filter ciphers based on criteria
     ///
-    /// Returns encrypted ciphers (not decrypted yet).
+    /// Returns filtered HashMap of encrypted ciphers (not decrypted yet).
     /// Filtering done on encrypted metadata (IDs, dates, structure).
-    pub fn filter_ciphers(&self, ciphers: &[Cipher], filters: &ItemFilters) -> Vec<Cipher> {
+    pub fn filter_ciphers(
+        &self,
+        ciphers: &HashMap<String, Cipher>,
+        filters: &ItemFilters,
+    ) -> HashMap<String, Cipher> {
         ciphers
             .iter()
-            .filter(|cipher| {
+            .filter(|(_, cipher)| {
                 // Trash filter (exclude deleted by default)
                 if filters.trash {
                     if cipher.deleted_date.is_none() {
                         return false;
                     }
-                } else {
-                    if cipher.deleted_date.is_some() {
-                        return false;
-                    }
+                } else if cipher.deleted_date.is_some() {
+                    return false;
                 }
 
                 // Organization filter
@@ -69,7 +72,7 @@ impl SearchService {
 
                 true
             })
-            .cloned()
+            .map(|(id, cipher)| (id.clone(), cipher.clone()))
             .collect()
     }
 
@@ -100,14 +103,17 @@ impl SearchService {
     /// Note: This requires the name to already be decrypted or
     /// we need to decrypt each cipher to search. For MVP, we'll
     /// decrypt all ciphers and search. Optimization: build search index.
-    pub fn find_cipher_by_name<'a>(
+    pub fn find_cipher_by_name(
         &self,
-        ciphers: &'a [Cipher],
+        ciphers: &HashMap<String, Cipher>,
         search: &str,
-    ) -> Option<&'a Cipher> {
+    ) -> Option<Cipher> {
         // For MVP: return first match by ID prefix
         // Real implementation will require decryption first
-        ciphers.iter().find(|c| c.id.starts_with(search))
+        ciphers
+            .iter()
+            .find(|(id, _)| id.starts_with(search))
+            .map(|(_, cipher)| cipher.clone())
     }
 
     /// Search in decrypted cipher names (post-decryption filter)

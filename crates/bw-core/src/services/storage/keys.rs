@@ -56,6 +56,24 @@ pub enum StorageKey {
     UserKey,
 
     // ============================================
+    // Vault data keys (user-namespaced)
+    // ============================================
+    /// Encrypted ciphers array
+    UserCiphers,
+
+    /// Encrypted folders array
+    UserFolders,
+
+    /// Collections array
+    UserCollections,
+
+    /// Organizations array
+    UserOrganizations,
+
+    /// Last sync timestamp
+    UserLastSync,
+
+    // ============================================
     // Device/misc keys (global)
     // ============================================
     /// Device identifier UUID
@@ -131,6 +149,26 @@ impl StorageKey {
                 let uid = user_id.expect("UserKey requires user_id");
                 format!("user_{}_masterPassword_masterKeyEncryptedUserKey", uid)
             }
+            Self::UserCiphers => {
+                let uid = user_id.expect("UserCiphers requires user_id");
+                format!("user_{}_ciphers_ciphers", uid)
+            }
+            Self::UserFolders => {
+                let uid = user_id.expect("UserFolders requires user_id");
+                format!("user_{}_folder_folders", uid)
+            }
+            Self::UserCollections => {
+                let uid = user_id.expect("UserCollections requires user_id");
+                format!("user_{}_collection_collections", uid)
+            }
+            Self::UserOrganizations => {
+                let uid = user_id.expect("UserOrganizations requires user_id");
+                format!("user_{}_organizations_organizations", uid)
+            }
+            Self::UserLastSync => {
+                let uid = user_id.expect("UserLastSync requires user_id");
+                format!("user_{}_sync_lastSync", uid)
+            }
         }
     }
 
@@ -147,6 +185,11 @@ impl StorageKey {
                 | Self::UserVaultTimeoutAction
                 | Self::UserKdfConfig
                 | Self::UserKey
+                | Self::UserCiphers
+                | Self::UserFolders
+                | Self::UserCollections
+                | Self::UserOrganizations
+                | Self::UserLastSync
         )
     }
 }

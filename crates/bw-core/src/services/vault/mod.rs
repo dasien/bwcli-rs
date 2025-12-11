@@ -2,12 +2,13 @@
 //!
 //! Provides high-level vault operations coordinating between storage, API client, and SDK.
 
-use crate::models::vault::{CipherView, CollectionView, FolderView, Organization, VaultData};
+use crate::models::vault::{Cipher, CipherView, Collection, CollectionView, Folder, FolderView, Organization};
 use crate::services::api::BitwardenApiClient;
 use crate::services::key_service::KeyService;
 use crate::services::sdk::Client;
-use crate::services::storage::{AccountManager, JsonFileStorage, Storage};
+use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
 use bitwarden_crypto::SymmetricCryptoKey;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -46,6 +47,7 @@ pub struct VaultService {
     totp_service: TotpService,
     key_service: KeyService,
     storage: Arc<Mutex<JsonFileStorage>>,
+    account_manager: Arc<AccountManager>,
 }
 
 impl VaultService {
@@ -64,7 +66,7 @@ impl VaultService {
 
         let totp_service = TotpService::new();
 
-        let key_service = KeyService::new(Arc::clone(&storage), account_manager);
+        let key_service = KeyService::new(Arc::clone(&storage), Arc::clone(&account_manager));
 
         Self {
             sync_service,
@@ -73,6 +75,7 @@ impl VaultService {
             totp_service,
             key_service,
             storage,
+            account_manager,
         }
     }
 
@@ -101,12 +104,10 @@ impl VaultService {
         session: &str,
     ) -> Result<Vec<CipherView>, VaultError> {
         let user_key = self.get_user_key(session).await?;
-        let vault_data = self.get_vault_data().await?;
-        let filtered = self
-            .search_service
-            .filter_ciphers(&vault_data.ciphers, filters);
+        let ciphers = self.get_ciphers().await?;
+        let filtered = self.search_service.filter_ciphers(&ciphers, filters);
         self.cipher_service
-            .decrypt_ciphers(&filtered, &user_key)
+            .decrypt_ciphers(&filtered.into_values().collect::<Vec<_>>(), &user_key)
             .await
     }
 
@@ -121,17 +122,18 @@ impl VaultService {
         session: &str,
     ) -> Result<Vec<FolderView>, VaultError> {
         let user_key = self.get_user_key(session).await?;
-        let vault_data = self.get_vault_data().await?;
-        let mut folders = self
+        let folders = self.get_folders().await?;
+        let folders_vec: Vec<Folder> = folders.into_values().collect();
+        let mut decrypted_folders = self
             .cipher_service
-            .decrypt_folders(&vault_data.folders, &user_key)
+            .decrypt_folders(&folders_vec, &user_key)
             .await?;
 
         if let Some(search_term) = search {
-            folders = self.search_service.filter_folders(folders, search_term);
+            decrypted_folders = self.search_service.filter_folders(decrypted_folders, search_term);
         }
 
-        Ok(folders)
+        Ok(decrypted_folders)
     }
 
     /// List all collections
@@ -147,31 +149,32 @@ impl VaultService {
         session: &str,
     ) -> Result<Vec<CollectionView>, VaultError> {
         let user_key = self.get_user_key(session).await?;
-        let vault_data = self.get_vault_data().await?;
-        let mut collections = self
+        let collections = self.get_collections().await?;
+        let collections_vec: Vec<Collection> = collections.into_values().collect();
+        let mut decrypted_collections = self
             .cipher_service
-            .decrypt_collections(&vault_data.collections, &user_key)
+            .decrypt_collections(&collections_vec, &user_key)
             .await?;
 
         // Filter by organization
         if let Some(org_id) = organization_id {
-            collections.retain(|c| c.organization_id == org_id);
+            decrypted_collections.retain(|c| c.organization_id == org_id);
         }
 
         // Filter by search
         if let Some(search_term) = search {
-            collections = self
+            decrypted_collections = self
                 .search_service
-                .filter_collections(collections, search_term);
+                .filter_collections(decrypted_collections, search_term);
         }
 
-        Ok(collections)
+        Ok(decrypted_collections)
     }
 
     /// List all organizations
     pub async fn list_organizations(&self) -> Result<Vec<Organization>, VaultError> {
-        let vault_data = self.get_vault_data().await?;
-        Ok(vault_data.organizations)
+        let orgs = self.get_organizations_data().await?;
+        Ok(orgs.into_values().collect())
     }
 
     // Get operations
@@ -187,20 +190,19 @@ impl VaultService {
         session: &str,
     ) -> Result<CipherView, VaultError> {
         let user_key = self.get_user_key(session).await?;
-        let vault_data = self.get_vault_data().await?;
+        let ciphers = self.get_ciphers().await?;
 
-        // Try to find by ID first
-        let cipher = if let Some(cipher) = vault_data.ciphers.iter().find(|c| c.id == id_or_search)
-        {
-            cipher
+        // Try to find by ID first (O(1) lookup)
+        let cipher = if let Some(cipher) = ciphers.get(id_or_search) {
+            cipher.clone()
         } else {
             // Search by name
             self.search_service
-                .find_cipher_by_name(&vault_data.ciphers, id_or_search)
+                .find_cipher_by_name(&ciphers, id_or_search)
                 .ok_or(VaultError::ItemNotFound)?
         };
 
-        self.cipher_service.decrypt_cipher(cipher, &user_key).await
+        self.cipher_service.decrypt_cipher(&cipher, &user_key).await
     }
 
     /// Get specific field from item
@@ -246,12 +248,54 @@ impl VaultService {
             .map_err(|e| VaultError::DecryptionError(e.to_string()))
     }
 
-    async fn get_vault_data(&self) -> Result<VaultData, VaultError> {
+    /// Get the active user ID
+    async fn get_user_id(&self) -> Result<String, VaultError> {
+        self.account_manager
+            .get_active_user_id()
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .ok_or(VaultError::NotAuthenticated)
+    }
+
+    /// Get ciphers from flat storage (stored as HashMap<id, Cipher>)
+    async fn get_ciphers(&self) -> Result<HashMap<String, Cipher>, VaultError> {
+        let user_id = self.get_user_id().await?;
         let storage = self.storage.lock().await;
         storage
-            .get::<VaultData>("vaultData")
+            .get::<HashMap<String, Cipher>>(&StorageKey::UserCiphers.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)
+    }
+
+    /// Get folders from flat storage (stored as HashMap<id, Folder>)
+    async fn get_folders(&self) -> Result<HashMap<String, Folder>, VaultError> {
+        let user_id = self.get_user_id().await?;
+        let storage = self.storage.lock().await;
+        storage
+            .get::<HashMap<String, Folder>>(&StorageKey::UserFolders.format(Some(&user_id)))
+            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .ok_or(VaultError::NotSynced)
+    }
+
+    /// Get collections from flat storage (stored as HashMap<id, Collection>)
+    async fn get_collections(&self) -> Result<HashMap<String, Collection>, VaultError> {
+        let user_id = self.get_user_id().await?;
+        let storage = self.storage.lock().await;
+        storage
+            .get::<HashMap<String, Collection>>(&StorageKey::UserCollections.format(Some(&user_id)))
+            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .ok_or(VaultError::NotSynced)
+    }
+
+    /// Get organizations from flat storage (stored as HashMap<id, Organization>)
+    async fn get_organizations_data(&self) -> Result<HashMap<String, Organization>, VaultError> {
+        let user_id = self.get_user_id().await?;
+        let storage = self.storage.lock().await;
+        // Organizations might not exist if user has none, so default to empty HashMap
+        Ok(storage
+            .get::<HashMap<String, Organization>>(&StorageKey::UserOrganizations.format(Some(&user_id)))
+            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .unwrap_or_default())
     }
 
     fn extract_field(&self, cipher: &CipherView, field: FieldType) -> Result<String, VaultError> {

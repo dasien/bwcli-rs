@@ -7,12 +7,13 @@
 //! must be provided to decrypt the user key from protected storage.
 
 use super::{CipherService, ConfirmationService, ValidationService, VaultError};
-use crate::models::vault::{Cipher, CipherRequest, CipherView, Folder, FolderRequest, VaultData};
+use crate::models::vault::{Cipher, CipherRequest, CipherView, Folder, FolderRequest};
 use crate::services::api::{ApiClient, BitwardenApiClient, endpoints};
 use crate::services::key_service::KeyService;
-use crate::services::storage::{AccountManager, JsonFileStorage, Storage};
+use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
 use bitwarden_crypto::SymmetricCryptoKey;
 use chrono::Utc;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -24,6 +25,7 @@ pub struct WriteService {
     validation_service: Arc<ValidationService>,
     confirmation_service: Arc<ConfirmationService>,
     key_service: KeyService,
+    account_manager: Arc<AccountManager>,
 }
 
 impl WriteService {
@@ -36,7 +38,7 @@ impl WriteService {
         confirmation_service: Arc<ConfirmationService>,
         account_manager: Arc<AccountManager>,
     ) -> Self {
-        let key_service = KeyService::new(Arc::clone(&storage), account_manager);
+        let key_service = KeyService::new(Arc::clone(&storage), Arc::clone(&account_manager));
         Self {
             api_client,
             storage,
@@ -44,6 +46,7 @@ impl WriteService {
             validation_service,
             confirmation_service,
             key_service,
+            account_manager,
         }
     }
 
@@ -53,6 +56,15 @@ impl WriteService {
             .get_user_key(session)
             .await
             .map_err(|e| VaultError::DecryptionError(e.to_string()))
+    }
+
+    /// Get the active user ID
+    async fn get_user_id(&self) -> Result<String, VaultError> {
+        self.account_manager
+            .get_active_user_id()
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .ok_or(VaultError::NotAuthenticated)
     }
 
     // ========== Cipher Operations ==========
@@ -330,23 +342,30 @@ impl WriteService {
     // ========== Cache Management (Private) ==========
 
     async fn add_cipher_to_cache(&self, cipher: &Cipher) -> Result<(), VaultError> {
+        let user_id = self.get_user_id().await?;
         let mut storage = self.storage.lock().await;
 
-        // Get current vault data
-        let mut vault_data: VaultData = storage
-            .get("vaultData")
+        // Get current ciphers (HashMap keyed by ID)
+        let mut ciphers: HashMap<String, Cipher> = storage
+            .get(&StorageKey::UserCiphers.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        // Add new cipher
-        vault_data.ciphers.push(cipher.clone());
+        // Add new cipher by ID
+        ciphers.insert(cipher.id.clone(), cipher.clone());
 
-        // Update timestamp
-        vault_data.last_sync = Utc::now().to_rfc3339();
-
-        // Write atomically
+        // Write ciphers
         storage
-            .set("vaultData", &vault_data)
+            .set(&StorageKey::UserCiphers.format(Some(&user_id)), &ciphers)
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
+        // Update last sync timestamp
+        storage
+            .set(
+                &StorageKey::UserLastSync.format(Some(&user_id)),
+                &Utc::now().to_rfc3339(),
+            )
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
@@ -354,26 +373,32 @@ impl WriteService {
     }
 
     async fn update_cipher_in_cache(&self, cipher: &Cipher) -> Result<(), VaultError> {
+        let user_id = self.get_user_id().await?;
         let mut storage = self.storage.lock().await;
 
-        let mut vault_data: VaultData = storage
-            .get("vaultData")
+        let mut ciphers: HashMap<String, Cipher> = storage
+            .get(&StorageKey::UserCiphers.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        // Find and replace cipher
-        if let Some(index) = vault_data.ciphers.iter().position(|c| c.id == cipher.id) {
-            vault_data.ciphers[index] = cipher.clone();
-        } else {
+        // Check cipher exists, then update by ID
+        if !ciphers.contains_key(&cipher.id) {
             return Err(VaultError::ItemNotFound);
         }
+        ciphers.insert(cipher.id.clone(), cipher.clone());
 
-        // Update timestamp
-        vault_data.last_sync = Utc::now().to_rfc3339();
-
-        // Write atomically
+        // Write ciphers
         storage
-            .set("vaultData", &vault_data)
+            .set(&StorageKey::UserCiphers.format(Some(&user_id)), &ciphers)
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
+        // Update last sync timestamp
+        storage
+            .set(
+                &StorageKey::UserLastSync.format(Some(&user_id)),
+                &Utc::now().to_rfc3339(),
+            )
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
@@ -381,22 +406,29 @@ impl WriteService {
     }
 
     async fn remove_cipher_from_cache(&self, id: &str) -> Result<(), VaultError> {
+        let user_id = self.get_user_id().await?;
         let mut storage = self.storage.lock().await;
 
-        let mut vault_data: VaultData = storage
-            .get("vaultData")
+        let mut ciphers: HashMap<String, Cipher> = storage
+            .get(&StorageKey::UserCiphers.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        // Remove cipher
-        vault_data.ciphers.retain(|c| c.id != id);
+        // Remove cipher by ID
+        ciphers.remove(id);
 
-        // Update timestamp
-        vault_data.last_sync = Utc::now().to_rfc3339();
-
-        // Write atomically
+        // Write ciphers
         storage
-            .set("vaultData", &vault_data)
+            .set(&StorageKey::UserCiphers.format(Some(&user_id)), &ciphers)
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
+        // Update last sync timestamp
+        storage
+            .set(
+                &StorageKey::UserLastSync.format(Some(&user_id)),
+                &Utc::now().to_rfc3339(),
+            )
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
@@ -404,26 +436,33 @@ impl WriteService {
     }
 
     async fn mark_cipher_deleted(&self, id: &str) -> Result<(), VaultError> {
+        let user_id = self.get_user_id().await?;
         let mut storage = self.storage.lock().await;
 
-        let mut vault_data: VaultData = storage
-            .get("vaultData")
+        let mut ciphers: HashMap<String, Cipher> = storage
+            .get(&StorageKey::UserCiphers.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        // Find and mark deleted
-        if let Some(cipher) = vault_data.ciphers.iter_mut().find(|c| c.id == id) {
+        // Find and mark deleted by ID
+        if let Some(cipher) = ciphers.get_mut(id) {
             cipher.deleted_date = Some(Utc::now().to_rfc3339());
         } else {
             return Err(VaultError::ItemNotFound);
         }
 
-        // Update timestamp
-        vault_data.last_sync = Utc::now().to_rfc3339();
-
-        // Write atomically
+        // Write ciphers
         storage
-            .set("vaultData", &vault_data)
+            .set(&StorageKey::UserCiphers.format(Some(&user_id)), &ciphers)
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
+        // Update last sync timestamp
+        storage
+            .set(
+                &StorageKey::UserLastSync.format(Some(&user_id)),
+                &Utc::now().to_rfc3339(),
+            )
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
@@ -431,18 +470,26 @@ impl WriteService {
     }
 
     async fn add_folder_to_cache(&self, folder: &Folder) -> Result<(), VaultError> {
+        let user_id = self.get_user_id().await?;
         let mut storage = self.storage.lock().await;
 
-        let mut vault_data: VaultData = storage
-            .get("vaultData")
+        let mut folders: HashMap<String, Folder> = storage
+            .get(&StorageKey::UserFolders.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        vault_data.folders.push(folder.clone());
-        vault_data.last_sync = Utc::now().to_rfc3339();
+        folders.insert(folder.id.clone(), folder.clone());
 
         storage
-            .set("vaultData", &vault_data)
+            .set(&StorageKey::UserFolders.format(Some(&user_id)), &folders)
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
+        storage
+            .set(
+                &StorageKey::UserLastSync.format(Some(&user_id)),
+                &Utc::now().to_rfc3339(),
+            )
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
@@ -450,23 +497,29 @@ impl WriteService {
     }
 
     async fn update_folder_in_cache(&self, folder: &Folder) -> Result<(), VaultError> {
+        let user_id = self.get_user_id().await?;
         let mut storage = self.storage.lock().await;
 
-        let mut vault_data: VaultData = storage
-            .get("vaultData")
+        let mut folders: HashMap<String, Folder> = storage
+            .get(&StorageKey::UserFolders.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        if let Some(index) = vault_data.folders.iter().position(|f| f.id == folder.id) {
-            vault_data.folders[index] = folder.clone();
-        } else {
+        if !folders.contains_key(&folder.id) {
             return Err(VaultError::FolderNotFound);
         }
-
-        vault_data.last_sync = Utc::now().to_rfc3339();
+        folders.insert(folder.id.clone(), folder.clone());
 
         storage
-            .set("vaultData", &vault_data)
+            .set(&StorageKey::UserFolders.format(Some(&user_id)), &folders)
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
+        storage
+            .set(
+                &StorageKey::UserLastSync.format(Some(&user_id)),
+                &Utc::now().to_rfc3339(),
+            )
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
@@ -474,18 +527,26 @@ impl WriteService {
     }
 
     async fn remove_folder_from_cache(&self, id: &str) -> Result<(), VaultError> {
+        let user_id = self.get_user_id().await?;
         let mut storage = self.storage.lock().await;
 
-        let mut vault_data: VaultData = storage
-            .get("vaultData")
+        let mut folders: HashMap<String, Folder> = storage
+            .get(&StorageKey::UserFolders.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        vault_data.folders.retain(|f| f.id != id);
-        vault_data.last_sync = Utc::now().to_rfc3339();
+        folders.remove(id);
 
         storage
-            .set("vaultData", &vault_data)
+            .set(&StorageKey::UserFolders.format(Some(&user_id)), &folders)
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
+        storage
+            .set(
+                &StorageKey::UserLastSync.format(Some(&user_id)),
+                &Utc::now().to_rfc3339(),
+            )
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
@@ -495,33 +556,29 @@ impl WriteService {
     // ========== Validation Helpers ==========
 
     async fn validate_cipher_exists(&self, id: &str) -> Result<(), VaultError> {
+        let user_id = self.get_user_id().await?;
         let storage = self.storage.lock().await;
-        let vault_data: VaultData = storage
-            .get("vaultData")
+        let ciphers: HashMap<String, Cipher> = storage
+            .get(&StorageKey::UserCiphers.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        vault_data
-            .ciphers
-            .iter()
-            .find(|c| c.id == id)
-            .ok_or(VaultError::ItemNotFound)?;
+        if !ciphers.contains_key(id) {
+            return Err(VaultError::ItemNotFound);
+        }
 
         Ok(())
     }
 
     async fn validate_cipher_deleted(&self, id: &str) -> Result<(), VaultError> {
+        let user_id = self.get_user_id().await?;
         let storage = self.storage.lock().await;
-        let vault_data: VaultData = storage
-            .get("vaultData")
+        let ciphers: HashMap<String, Cipher> = storage
+            .get(&StorageKey::UserCiphers.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        let cipher = vault_data
-            .ciphers
-            .iter()
-            .find(|c| c.id == id)
-            .ok_or(VaultError::ItemNotFound)?;
+        let cipher = ciphers.get(id).ok_or(VaultError::ItemNotFound)?;
 
         if cipher.deleted_date.is_none() {
             return Err(VaultError::ItemNotDeleted);
@@ -531,33 +588,28 @@ impl WriteService {
     }
 
     async fn validate_folder_exists(&self, id: &str) -> Result<(), VaultError> {
+        let user_id = self.get_user_id().await?;
         let storage = self.storage.lock().await;
-        let vault_data: VaultData = storage
-            .get("vaultData")
+        let folders: HashMap<String, Folder> = storage
+            .get(&StorageKey::UserFolders.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        vault_data
-            .folders
-            .iter()
-            .find(|f| f.id == id)
-            .ok_or(VaultError::FolderNotFound)?;
+        if !folders.contains_key(id) {
+            return Err(VaultError::FolderNotFound);
+        }
 
         Ok(())
     }
 
     async fn get_cipher(&self, id: &str) -> Result<Cipher, VaultError> {
+        let user_id = self.get_user_id().await?;
         let storage = self.storage.lock().await;
-        let vault_data: VaultData = storage
-            .get("vaultData")
+        let ciphers: HashMap<String, Cipher> = storage
+            .get(&StorageKey::UserCiphers.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        vault_data
-            .ciphers
-            .iter()
-            .find(|c| c.id == id)
-            .cloned()
-            .ok_or(VaultError::ItemNotFound)
+        ciphers.get(id).cloned().ok_or(VaultError::ItemNotFound)
     }
 }
