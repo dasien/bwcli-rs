@@ -2,7 +2,9 @@
 //!
 //! Provides high-level vault operations coordinating between storage, API client, and SDK.
 
-use crate::models::vault::{Cipher, CipherView, Collection, CollectionView, Folder, FolderView, Organization};
+use crate::models::vault::{
+    Cipher, CipherView, Collection, CollectionView, Folder, FolderView, Organization,
+};
 use crate::services::api::BitwardenApiClient;
 use crate::services::key_service::KeyService;
 use crate::services::sdk::Client;
@@ -130,7 +132,9 @@ impl VaultService {
             .await?;
 
         if let Some(search_term) = search {
-            decrypted_folders = self.search_service.filter_folders(decrypted_folders, search_term);
+            decrypted_folders = self
+                .search_service
+                .filter_folders(decrypted_folders, search_term);
         }
 
         Ok(decrypted_folders)
@@ -293,7 +297,9 @@ impl VaultService {
         let storage = self.storage.lock().await;
         // Organizations might not exist if user has none, so default to empty HashMap
         Ok(storage
-            .get::<HashMap<String, Organization>>(&StorageKey::UserOrganizations.format(Some(&user_id)))
+            .get::<HashMap<String, Organization>>(
+                &StorageKey::UserOrganizations.format(Some(&user_id)),
+            )
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .unwrap_or_default())
     }

@@ -24,6 +24,10 @@ tracing-subscriber.workspace = true
 # Internal dependencies
 bw-core = { path = "../bw-core" }
 
+# Bitwarden SDK
+bitwarden-core.workspace = true
+bitwarden-generators.workspace = true
+
 # Security
 secrecy.workspace = true
 

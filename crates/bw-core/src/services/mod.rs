@@ -15,9 +15,6 @@ pub mod auth;
 // Vault module
 pub mod vault;
 
-// Generator module
-pub mod generator;
-
 // Send module
 pub mod send;
 

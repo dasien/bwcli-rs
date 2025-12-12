@@ -9,7 +9,7 @@ pub struct GenerateCommand {
     #[arg(long)]
     pub passphrase: bool,
 
-    /// Password length (default: 14)
+    /// Password length (default: 16)
     #[arg(long)]
     pub length: Option<usize>,
 
@@ -103,66 +103,92 @@ pub async fn execute_generate(
     global_args: &GlobalArgs,
     _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
-    use bw_core::services::generator::{
-        PassphraseOptions, PasswordOptions, generate_passphrase, generate_password,
+    use bitwarden_core::Client;
+    use bitwarden_generators::{
+        GeneratorClientsExt, PassphraseError, PassphraseGeneratorRequest, PasswordError,
+        PasswordGeneratorRequest,
     };
 
+    // RNG Note: The SDK uses rand::thread_rng() which is a ChaCha12 CSPRNG
+    // seeded from OsRng. This is cryptographically secure and equivalent
+    // to our previous direct OsRng usage. The thread-local design provides
+    // better performance for repeated calls while maintaining security.
+
+    // Create a minimal SDK client for generator operations
+    let client = Client::new(None);
+    let generator = client.generator();
+
     if cmd.passphrase {
-        // Generate passphrase
-        let options = PassphraseOptions {
-            num_words: cmd.words.unwrap_or(3),
-            separator: cmd.separator.unwrap_or_else(|| "-".to_string()),
+        // Generate passphrase using SDK
+        let request = PassphraseGeneratorRequest {
+            num_words: cmd.words.unwrap_or(3) as u8,
+            word_separator: cmd.separator.unwrap_or_else(|| "-".to_string()),
             capitalize: cmd.capitalize,
             include_number: cmd.include_number,
         };
 
-        let passphrase = generate_passphrase(&options)?;
+        let result = generator.passphrase(request).map_err(|e| match e {
+            PassphraseError::InvalidNumWords { minimum, maximum } => {
+                anyhow::anyhow!(
+                    "Invalid word count. Number of words must be between {} and {}",
+                    minimum,
+                    maximum
+                )
+            }
+        })?;
 
         if global_args.response {
             Ok(Response::success_json(serde_json::json!({
-                "data": passphrase
+                "data": result
             })))
         } else {
-            Ok(Response::success_raw(passphrase))
+            Ok(Response::success_raw(result))
         }
     } else {
-        // Generate password
-        let mut options = PasswordOptions {
-            length: cmd.length.unwrap_or(14),
-            include_lowercase: true,
-            include_uppercase: true,
-            include_numbers: true,
-            include_special: true,
-            min_lowercase: cmd.lowercase.unwrap_or(0),
-            min_uppercase: cmd.uppercase.unwrap_or(0),
-            min_numbers: cmd.number.unwrap_or(1),
-            min_special: cmd.special.unwrap_or(1),
-            exclude_chars: None,
+        // Generate password using SDK
+        //
+        // Character set logic:
+        // - If minimum is explicitly set to 0, disable that character set
+        // - Otherwise, enable the character set with the specified minimum
+        // - Default behavior: all character sets enabled with special chars included
+        //   (preserves backward compatibility with current CLI behavior)
+        let lowercase_enabled = cmd.lowercase != Some(0);
+        let uppercase_enabled = cmd.uppercase != Some(0);
+        let numbers_enabled = cmd.number != Some(0);
+        let special_enabled = cmd.special != Some(0);
+
+        let request = PasswordGeneratorRequest {
+            length: cmd.length.unwrap_or(16) as u8,
+            lowercase: lowercase_enabled,
+            uppercase: uppercase_enabled,
+            numbers: numbers_enabled,
+            special: special_enabled,
+            avoid_ambiguous: false,
+            min_lowercase: cmd.lowercase.filter(|&v| v > 0).map(|v| v as u8),
+            min_uppercase: cmd.uppercase.filter(|&v| v > 0).map(|v| v as u8),
+            min_number: cmd.number.filter(|&v| v > 0).map(|v| v as u8),
+            min_special: cmd.special.filter(|&v| v > 0).map(|v| v as u8),
         };
 
-        // If any minimums are explicitly set to 0, disable that character set
-        // This matches TypeScript CLI behavior
-        if cmd.lowercase == Some(0) {
-            options.include_lowercase = false;
-        }
-        if cmd.uppercase == Some(0) {
-            options.include_uppercase = false;
-        }
-        if cmd.number == Some(0) {
-            options.include_numbers = false;
-        }
-        if cmd.special == Some(0) {
-            options.include_special = false;
-        }
-
-        let password = generate_password(&options)?;
+        let result = generator.password(request).map_err(|e| match e {
+            PasswordError::NoCharacterSetEnabled => {
+                anyhow::anyhow!(
+                    "No character sets enabled. Enable at least one of: lowercase, uppercase, numbers, or special characters"
+                )
+            }
+            PasswordError::InvalidLength => {
+                anyhow::anyhow!(
+                    "Invalid password length. Length must be at least 4 and greater than the sum of minimum character requirements"
+                )
+            }
+        })?;
 
         if global_args.response {
             Ok(Response::success_json(serde_json::json!({
-                "data": password
+                "data": result
             })))
         } else {
-            Ok(Response::success_raw(password))
+            Ok(Response::success_raw(result))
         }
     }
 }

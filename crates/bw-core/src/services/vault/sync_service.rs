@@ -127,10 +127,7 @@ impl SyncService {
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
         storage
-            .set(
-                &StorageKey::UserLastSync.format(Some(&user_id)),
-                &now,
-            )
+            .set(&StorageKey::UserLastSync.format(Some(&user_id)), &now)
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 

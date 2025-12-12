@@ -490,6 +490,8 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "base64",
+ "bitwarden-core",
+ "bitwarden-generators",
  "bw-core",
  "clap",
  "dialoguer",
