@@ -386,7 +386,7 @@ fn merge_cipher_views(existing: CipherView, updates: CipherView) -> CipherView {
         } else {
             existing.folder_id
         },
-        cipher_type: updates.cipher_type, // Type can change
+        r#type: updates.r#type, // Type can change
         name: if updates.name.is_empty() {
             existing.name
         } else {
@@ -404,19 +404,31 @@ fn merge_cipher_views(existing: CipherView, updates: CipherView) -> CipherView {
         revision_date: existing.revision_date, // WriteService updates this
         creation_date: existing.creation_date,
         deleted_date: existing.deleted_date,
+        archived_date: existing.archived_date,
 
         // Type-specific data - take updates if provided
         login: updates.login.or(existing.login),
         secure_note: updates.secure_note.or(existing.secure_note),
         card: updates.card.or(existing.card),
         identity: updates.identity.or(existing.identity),
+        ssh_key: updates.ssh_key.or(existing.ssh_key),
 
         attachments: existing.attachments, // Preserve - separate management
-        fields: if updates.fields.is_empty() {
+        fields: if updates.fields.as_ref().map_or(true, |f| f.is_empty()) {
             existing.fields
         } else {
             updates.fields
         },
+        password_history: existing.password_history,
+
+        // Preserve other SDK fields
+        key: existing.key,
+        reprompt: existing.reprompt,
+        organization_use_totp: existing.organization_use_totp,
+        edit: existing.edit,
+        permissions: existing.permissions,
+        view_password: existing.view_password,
+        local_data: existing.local_data,
     }
 }
 
@@ -594,8 +606,11 @@ pub async fn execute_get(
             let folders = vault_service.list_folders(None, session).await;
             match folders {
                 Ok(folders) => {
-                    if let Some(folder) = folders.iter().find(|f| f.id == folder_cmd.id) {
-                        Ok(Response::success(folder.clone()))
+                    // FolderView.id is Option<FolderId>, compare by parsing folder_cmd.id
+                    if let Some(folder) = folders.iter().find(|f| {
+                        f.id.as_ref().map(|id| id.to_string()) == Some(folder_cmd.id.clone())
+                    }) {
+                        Ok(Response::success(folder))
                     } else {
                         Ok(Response::error(format!(
                             "Folder not found: {}",
@@ -631,9 +646,10 @@ pub async fn execute_create(
             let write_service = create_write_service(ctx, global_args.nointeraction);
             match write_service.create_cipher(cipher_view, session).await {
                 Ok(created) => {
-                    // 3. Return decrypted view
+                    // 3. Return decrypted view - created.id is Option<CipherId>
                     let vault_service = create_vault_service(ctx);
-                    match vault_service.get_item(&created.id, session).await {
+                    let id_str = created.id.map(|id| id.to_string()).unwrap_or_default();
+                    match vault_service.get_item(&id_str, session).await {
                         Ok(decrypted) => Ok(Response::success(decrypted)),
                         Err(e) => Ok(Response::error(e.to_string())),
                     }
@@ -663,7 +679,7 @@ pub async fn execute_create(
                     match vault_service.list_folders(None, session).await {
                         Ok(folders) => {
                             if let Some(folder) = folders.iter().find(|f| f.id == created.id) {
-                                Ok(Response::success(folder.clone()))
+                                Ok(Response::success(folder))
                             } else {
                                 Ok(Response::error("Folder created but not found in cache"))
                             }
@@ -722,8 +738,9 @@ pub async fn execute_edit(
                 .await
             {
                 Ok(updated) => {
-                    // 5. Return decrypted view
-                    match vault_service.get_item(&updated.id, session).await {
+                    // 5. Return decrypted view - updated.id is Option<CipherId>
+                    let id_str = updated.id.map(|id| id.to_string()).unwrap_or_default();
+                    match vault_service.get_item(&id_str, session).await {
                         Ok(decrypted) => Ok(Response::success(decrypted)),
                         Err(e) => Ok(Response::error(e.to_string())),
                     }
@@ -752,8 +769,11 @@ pub async fn execute_edit(
                     let vault_service = create_vault_service(ctx);
                     match vault_service.list_folders(None, session).await {
                         Ok(folders) => {
-                            if let Some(folder) = folders.iter().find(|f| f.id == folder_cmd.id) {
-                                Ok(Response::success(folder.clone()))
+                            // FolderView.id is Option<FolderId>
+                            if let Some(folder) = folders.iter().find(|f| {
+                                f.id.as_ref().map(|id| id.to_string()) == Some(folder_cmd.id.clone())
+                            }) {
+                                Ok(Response::success(folder))
                             } else {
                                 Ok(Response::error("Folder updated but not found in cache"))
                             }
@@ -837,9 +857,10 @@ pub async fn execute_restore(
 
     match write_service.restore_cipher(&cmd.id).await {
         Ok(restored) => {
-            // Return decrypted view
+            // Return decrypted view - restored.id is Option<CipherId>
             let vault_service = create_vault_service(ctx);
-            match vault_service.get_item(&restored.id, session).await {
+            let id_str = restored.id.map(|id| id.to_string()).unwrap_or_default();
+            match vault_service.get_item(&id_str, session).await {
                 Ok(decrypted) => Ok(Response::success(decrypted)),
                 Err(e) => Ok(Response::error(e.to_string())),
             }
@@ -871,9 +892,10 @@ pub async fn execute_move(
         .await
     {
         Ok(moved) => {
-            // Return decrypted view
+            // Return decrypted view - moved.id is Option<CipherId>
             let vault_service = create_vault_service(ctx);
-            match vault_service.get_item(&moved.id, session).await {
+            let id_str = moved.id.map(|id| id.to_string()).unwrap_or_default();
+            match vault_service.get_item(&id_str, session).await {
                 Ok(decrypted) => Ok(Response::success(decrypted)),
                 Err(e) => Ok(Response::error(e.to_string())),
             }

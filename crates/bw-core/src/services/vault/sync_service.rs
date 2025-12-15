@@ -4,7 +4,7 @@
 //! Uses TypeScript CLI compatible flat storage format with user-namespaced keys.
 
 use super::errors::VaultError;
-use crate::models::vault::SyncResponse;
+use crate::models::vault::{parse_sync_response, SyncResponseModel};
 use crate::services::api::{ApiClient, BitwardenApiClient, endpoints};
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
 use std::collections::HashMap;
@@ -46,12 +46,16 @@ impl SyncService {
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotAuthenticated)?;
 
-        // Fetch vault data from API
-        let sync_response: SyncResponse = self
+        // Fetch vault data from API using SDK API model
+        let sync_response: SyncResponseModel = self
             .api_client
             .get_with_auth(endpoints::api::SYNC)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
+
+        // Parse into SDK domain types
+        let sync_data = parse_sync_response(sync_response)
+            .map_err(|e| VaultError::ApiError(format!("Failed to parse sync response: {}", e)))?;
 
         // Store vault data using TypeScript CLI compatible flat keys
         // Convert Vec to HashMap<id, item> for storage (matches TypeScript CLI format)
@@ -59,10 +63,10 @@ impl SyncService {
         let mut storage = self.storage.lock().await;
 
         // Convert ciphers Vec to HashMap keyed by ID
-        let ciphers_map: HashMap<String, _> = sync_response
+        let ciphers_map: HashMap<String, _> = sync_data
             .ciphers
             .into_iter()
-            .map(|c| (c.id.clone(), c))
+            .filter_map(|c| c.id.map(|id| (id.to_string(), c)))
             .collect();
         storage
             .set(
@@ -73,10 +77,10 @@ impl SyncService {
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
         // Convert folders Vec to HashMap keyed by ID
-        let folders_map: HashMap<String, _> = sync_response
+        let folders_map: HashMap<String, _> = sync_data
             .folders
             .into_iter()
-            .map(|f| (f.id.clone(), f))
+            .filter_map(|f| f.id.map(|id| (id.to_string(), f)))
             .collect();
         storage
             .set(
@@ -87,41 +91,15 @@ impl SyncService {
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
         // Convert collections Vec to HashMap keyed by ID
-        let collections_map: HashMap<String, _> = sync_response
+        let collections_map: HashMap<String, _> = sync_data
             .collections
             .into_iter()
-            .map(|c| (c.id.clone(), c))
+            .filter_map(|c| c.id.map(|id| (id.to_string(), c)))
             .collect();
         storage
             .set(
                 &StorageKey::UserCollections.format(Some(&user_id)),
                 &collections_map,
-            )
-            .await
-            .map_err(|e| VaultError::StorageError(e.to_string()))?;
-
-        // Organizations come from profile in sync response, not separate field
-        // Extract from profile if available and convert to HashMap
-        let organizations: HashMap<String, serde_json::Value> = sync_response
-            .profile
-            .as_ref()
-            .and_then(|p| p.get("organizations"))
-            .and_then(|o| o.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|org| {
-                        org.get("id")
-                            .and_then(|id| id.as_str())
-                            .map(|id| (id.to_string(), org.clone()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        storage
-            .set(
-                &StorageKey::UserOrganizations.format(Some(&user_id)),
-                &organizations,
             )
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;

@@ -32,6 +32,8 @@ bitwarden-core = { path = "../sdk-internal/crates/bitwarden-core", version = "=1
 bitwarden-crypto = { path = "../sdk-internal/crates/bitwarden-crypto", version = "=1.0.0" }
 bitwarden-auth = { path = "../sdk-internal/crates/bitwarden-auth", version = "=1.0.0" }
 bitwarden-vault = { path = "../sdk-internal/crates/bitwarden-vault", version = "=1.0.0" }
+bitwarden-collections = { path = "../sdk-internal/crates/bitwarden-collections", version = "=1.0.0" }
+bitwarden-api-api = { path = "../sdk-internal/crates/bitwarden-api-api", version = "=1.0.0" }
 bitwarden-generators = { path = "../sdk-internal/crates/bitwarden-generators", version = "=1.0.0" }
 bitwarden-encoding = { path = "../sdk-internal/crates/bitwarden-encoding", version = "=1.0.0" }
 bitwarden-error = { path = "../sdk-internal/crates/bitwarden-error", version = "=1.0.0" }

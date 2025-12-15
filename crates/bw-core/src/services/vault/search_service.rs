@@ -2,7 +2,10 @@
 //!
 //! Provides efficient filtering without requiring full decryption.
 
-use crate::models::vault::{Cipher, CollectionView, FolderView};
+use bitwarden_collections::collection::CollectionId;
+use bitwarden_core::OrganizationId;
+use bitwarden_collections::collection::CollectionView;
+use bitwarden_vault::{Cipher, FolderId, FolderView};
 use std::collections::HashMap;
 
 /// Item filter options for list operations
@@ -49,21 +52,27 @@ impl SearchService {
 
                 // Organization filter
                 if let Some(org_id) = &filters.organization_id {
-                    if cipher.organization_id.as_ref() != Some(org_id) {
+                    let org_id_parsed: Option<OrganizationId> = org_id.parse().ok();
+                    if cipher.organization_id != org_id_parsed {
                         return false;
                     }
                 }
 
                 // Folder filter (including "no folder" as None)
                 if let Some(folder_id) = &filters.folder_id {
-                    if cipher.folder_id.as_ref() != Some(folder_id) {
+                    let folder_id_parsed: Option<FolderId> = folder_id.parse().ok();
+                    if cipher.folder_id != folder_id_parsed {
                         return false;
                     }
                 }
 
                 // Collection filter
                 if let Some(collection_id) = &filters.collection_id {
-                    if !cipher.collection_ids.contains(collection_id) {
+                    if let Ok(collection_id_parsed) = collection_id.parse::<CollectionId>() {
+                        if !cipher.collection_ids.contains(&collection_id_parsed) {
+                            return false;
+                        }
+                    } else {
                         return false;
                     }
                 }

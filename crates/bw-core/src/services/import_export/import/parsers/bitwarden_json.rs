@@ -1,8 +1,8 @@
 //! Bitwarden JSON import parser
 
-use crate::models::vault::CipherType;
+use crate::models::vault::{CipherType, FolderId};
 use crate::services::import_export::errors::ImportError;
-use crate::services::import_export::export::formatters::json::JsonExport;
+use crate::services::import_export::export::formatters::json::JsonExportOwned;
 use crate::services::import_export::import::*;
 use async_trait::async_trait;
 
@@ -36,7 +36,7 @@ impl ImportParser for BitwardenJsonParser {
         data: &[u8],
         _options: &ImportOptions,
     ) -> Result<ImportData, ImportError> {
-        let export: JsonExport = serde_json::from_slice(data)?;
+        let export: JsonExportOwned = serde_json::from_slice(data)?;
 
         // Check it's not encrypted
         if export.encrypted {
@@ -54,11 +54,11 @@ impl ImportParser for BitwardenJsonParser {
             })
             .collect();
 
-        // Build folder ID to name map
-        let folder_map: std::collections::HashMap<String, String> = export
+        // Build folder ID to name map - FolderView.id is Option<FolderId>
+        let folder_map: std::collections::HashMap<FolderId, String> = export
             .folders
             .iter()
-            .map(|f| (f.id.clone(), f.name.clone()))
+            .filter_map(|f| f.id.clone().map(|id| (id, f.name.clone())))
             .collect();
 
         // Convert items
@@ -66,17 +66,23 @@ impl ImportParser for BitwardenJsonParser {
             .items
             .iter()
             .map(|cipher| {
+                // cipher.folder_id is Option<FolderId>
                 let folder_name = cipher
                     .folder_id
                     .as_ref()
                     .and_then(|id| folder_map.get(id))
                     .cloned();
 
+                // login.uris is Option<Vec<LoginUriView>>
                 let login = cipher.login.as_ref().map(|l| ImportLogin {
                     username: l.username.clone(),
                     password: l.password.clone(),
                     totp: l.totp.clone(),
-                    uris: l.uris.iter().filter_map(|u| u.uri.clone()).collect(),
+                    uris: l
+                        .uris
+                        .as_ref()
+                        .map(|uris| uris.iter().filter_map(|u| u.uri.clone()).collect())
+                        .unwrap_or_default(),
                 });
 
                 let card = cipher.card.as_ref().map(|c| ImportCard {
@@ -108,18 +114,25 @@ impl ImportParser for BitwardenJsonParser {
                     license_number: i.license_number.clone(),
                 });
 
+                // cipher.fields is Option<Vec<FieldView>>
                 let fields = cipher
                     .fields
-                    .iter()
-                    .map(|f| ImportField {
-                        name: f.name.clone(),
-                        value: f.value.clone(),
-                        field_type: f.field_type,
+                    .as_ref()
+                    .map(|fields| {
+                        fields
+                            .iter()
+                            .map(|f| ImportField {
+                                name: f.name.clone().unwrap_or_default(),
+                                value: f.value.clone(),
+                                field_type: f.r#type as u8,
+                            })
+                            .collect()
                     })
-                    .collect();
+                    .unwrap_or_default();
 
                 ImportItem {
-                    item_type: Self::cipher_type_to_import_type(cipher.cipher_type),
+                    // Use r#type instead of cipher_type
+                    item_type: Self::cipher_type_to_import_type(cipher.r#type),
                     folder_name,
                     favorite: cipher.favorite,
                     name: cipher.name.clone(),

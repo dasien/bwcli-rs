@@ -3,13 +3,12 @@
 //! Provides high-level vault operations coordinating between storage, API client, and SDK.
 
 use crate::models::vault::{
-    Cipher, CipherView, Collection, CollectionView, Folder, FolderView, Organization,
+    Cipher, CipherListView, CipherView, Collection, CollectionView, Folder, FolderView,
+    Organization, OrganizationId,
 };
 use crate::services::api::BitwardenApiClient;
-use crate::services::key_service::KeyService;
-use crate::services::sdk::Client;
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
-use bitwarden_crypto::SymmetricCryptoKey;
+use bitwarden_core::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -47,7 +46,6 @@ pub struct VaultService {
     cipher_service: CipherService,
     search_service: SearchService,
     totp_service: TotpService,
-    key_service: KeyService,
     storage: Arc<Mutex<JsonFileStorage>>,
     account_manager: Arc<AccountManager>,
 }
@@ -61,21 +59,15 @@ impl VaultService {
         account_manager: Arc<AccountManager>,
     ) -> Self {
         let sync_service = SyncService::new(Arc::clone(&api_client), Arc::clone(&storage));
-
-        let cipher_service = CipherService::new(Arc::clone(&sdk_client));
-
+        let cipher_service = CipherService::new(sdk_client);
         let search_service = SearchService::new();
-
         let totp_service = TotpService::new();
-
-        let key_service = KeyService::new(Arc::clone(&storage), Arc::clone(&account_manager));
 
         Self {
             sync_service,
             cipher_service,
             search_service,
             totp_service,
-            key_service,
             storage,
             account_manager,
         }
@@ -97,39 +89,35 @@ impl VaultService {
 
     /// List all items with optional filters
     ///
+    /// Returns CipherListView for efficiency (less data than full CipherView)
+    ///
     /// # Arguments
     /// * `filters` - Optional filters to apply to the results
-    /// * `session` - BW_SESSION key for decryption
+    /// * `_session` - BW_SESSION key (SDK handles keys internally)
     pub async fn list_items(
         &self,
         filters: &ItemFilters,
-        session: &str,
-    ) -> Result<Vec<CipherView>, VaultError> {
-        let user_key = self.get_user_key(session).await?;
+        _session: &str,
+    ) -> Result<Vec<CipherListView>, VaultError> {
         let ciphers = self.get_ciphers().await?;
         let filtered = self.search_service.filter_ciphers(&ciphers, filters);
-        self.cipher_service
-            .decrypt_ciphers(&filtered.into_values().collect::<Vec<_>>(), &user_key)
-            .await
+        let cipher_vec: Vec<Cipher> = filtered.into_values().collect();
+        self.cipher_service.decrypt_ciphers(cipher_vec)
     }
 
     /// List all folders
     ///
     /// # Arguments
     /// * `search` - Optional search term to filter folders
-    /// * `session` - BW_SESSION key for decryption
+    /// * `_session` - BW_SESSION key (SDK handles keys internally)
     pub async fn list_folders(
         &self,
         search: Option<&str>,
-        session: &str,
+        _session: &str,
     ) -> Result<Vec<FolderView>, VaultError> {
-        let user_key = self.get_user_key(session).await?;
         let folders = self.get_folders().await?;
         let folders_vec: Vec<Folder> = folders.into_values().collect();
-        let mut decrypted_folders = self
-            .cipher_service
-            .decrypt_folders(&folders_vec, &user_key)
-            .await?;
+        let mut decrypted_folders = self.cipher_service.decrypt_folders(folders_vec)?;
 
         if let Some(search_term) = search {
             decrypted_folders = self
@@ -145,24 +133,23 @@ impl VaultService {
     /// # Arguments
     /// * `organization_id` - Optional organization ID to filter by
     /// * `search` - Optional search term to filter collections
-    /// * `session` - BW_SESSION key for decryption
+    /// * `_session` - BW_SESSION key (SDK handles keys internally)
     pub async fn list_collections(
         &self,
         organization_id: Option<&str>,
         search: Option<&str>,
-        session: &str,
+        _session: &str,
     ) -> Result<Vec<CollectionView>, VaultError> {
-        let user_key = self.get_user_key(session).await?;
         let collections = self.get_collections().await?;
         let collections_vec: Vec<Collection> = collections.into_values().collect();
-        let mut decrypted_collections = self
-            .cipher_service
-            .decrypt_collections(&collections_vec, &user_key)
-            .await?;
+        let mut decrypted_collections = self.cipher_service.decrypt_collections(collections_vec)?;
 
-        // Filter by organization
-        if let Some(org_id) = organization_id {
-            decrypted_collections.retain(|c| c.organization_id == org_id);
+        // Filter by organization (SDK uses OrganizationId)
+        if let Some(org_id_str) = organization_id {
+            if let Ok(org_uuid) = org_id_str.parse::<uuid::Uuid>() {
+                let org_id = OrganizationId::new(org_uuid);
+                decrypted_collections.retain(|c| c.organization_id == org_id);
+            }
         }
 
         // Filter by search
@@ -187,13 +174,12 @@ impl VaultService {
     ///
     /// # Arguments
     /// * `id_or_search` - ID or search term to find the item
-    /// * `session` - BW_SESSION key for decryption
+    /// * `_session` - BW_SESSION key (SDK handles keys internally)
     pub async fn get_item(
         &self,
         id_or_search: &str,
-        session: &str,
+        _session: &str,
     ) -> Result<CipherView, VaultError> {
-        let user_key = self.get_user_key(session).await?;
         let ciphers = self.get_ciphers().await?;
 
         // Try to find by ID first (O(1) lookup)
@@ -206,7 +192,7 @@ impl VaultService {
                 .ok_or(VaultError::ItemNotFound)?
         };
 
-        self.cipher_service.decrypt_cipher(&cipher, &user_key).await
+        self.cipher_service.decrypt_cipher(cipher)
     }
 
     /// Get specific field from item
@@ -243,14 +229,6 @@ impl VaultService {
     }
 
     // Helper methods
-
-    /// Get the user key from protected storage using the session key
-    async fn get_user_key(&self, session: &str) -> Result<SymmetricCryptoKey, VaultError> {
-        self.key_service
-            .get_user_key(session)
-            .await
-            .map_err(|e| VaultError::DecryptionError(e.to_string()))
-    }
 
     /// Get the active user ID
     async fn get_user_id(&self) -> Result<String, VaultError> {
@@ -295,7 +273,6 @@ impl VaultService {
     async fn get_organizations_data(&self) -> Result<HashMap<String, Organization>, VaultError> {
         let user_id = self.get_user_id().await?;
         let storage = self.storage.lock().await;
-        // Organizations might not exist if user has none, so default to empty HashMap
         Ok(storage
             .get::<HashMap<String, Organization>>(
                 &StorageKey::UserOrganizations.format(Some(&user_id)),
@@ -319,7 +296,8 @@ impl VaultService {
             FieldType::Uri => cipher
                 .login
                 .as_ref()
-                .and_then(|l| l.uris.first())
+                .and_then(|l| l.uris.as_ref())
+                .and_then(|uris| uris.first())
                 .and_then(|u| u.uri.clone())
                 .ok_or(VaultError::FieldNotFound("uri")),
             FieldType::Notes => cipher

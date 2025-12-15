@@ -1,6 +1,6 @@
 //! CSV export formatter
 
-use crate::models::vault::{CipherType, CipherView};
+use crate::models::vault::{CipherType, CipherView, FolderId};
 use crate::services::import_export::errors::ExportError;
 use crate::services::import_export::export::{ExportData, ExportFormatter, ExportOptions};
 use async_trait::async_trait;
@@ -20,33 +20,49 @@ impl CsvFormatter {
         let mut record = vec![
             folder_name.to_string(),
             if cipher.favorite { "1" } else { "0" }.to_string(),
-            Self::type_to_string(cipher.cipher_type),
+            Self::type_to_string(cipher.r#type),
             cipher.name.clone(),
             cipher.notes.clone().unwrap_or_default(),
         ];
 
-        // Custom fields
+        // Custom fields - cipher.fields is Option<Vec<FieldView>>
         let fields_str = cipher
             .fields
-            .iter()
-            .map(|f| format!("{}: {}", f.name, f.value.as_deref().unwrap_or("")))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .as_ref()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .map(|f| {
+                        format!(
+                            "{}: {}",
+                            f.name.as_deref().unwrap_or(""),
+                            f.value.as_deref().unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
         record.push(fields_str);
 
         // Reprompt (always 0 for now)
         record.push("0".to_string());
 
         // Login fields (columns 7-10: 4 columns)
-        match cipher.cipher_type {
+        match cipher.r#type {
             CipherType::Login => {
                 if let Some(login) = &cipher.login {
+                    // login.uris is Option<Vec<LoginUriView>>
                     let uris = login
                         .uris
-                        .iter()
-                        .filter_map(|u| u.uri.clone())
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                        .as_ref()
+                        .map(|uris| {
+                            uris.iter()
+                                .filter_map(|u| u.uri.clone())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default();
                     record.push(uris);
                     record.push(login.username.clone().unwrap_or_default());
                     record.push(login.password.clone().unwrap_or_default());
@@ -62,7 +78,7 @@ impl CsvFormatter {
         }
 
         // Card fields (columns 11-16: 6 columns)
-        match cipher.cipher_type {
+        match cipher.r#type {
             CipherType::Card => {
                 if let Some(card) = &cipher.card {
                     record.push(card.cardholder_name.clone().unwrap_or_default());
@@ -83,7 +99,7 @@ impl CsvFormatter {
 
         // Identity fields (columns 17-33: 17 columns)
         // Note: The spec includes 'company' but the model doesn't have it yet
-        match cipher.cipher_type {
+        match cipher.r#type {
             CipherType::Identity => {
                 if let Some(identity) = &cipher.identity {
                     record.push(identity.title.clone().unwrap_or_default());
@@ -185,15 +201,16 @@ impl ExportFormatter for CsvFormatter {
             "identity_licenseNumber",
         ])?;
 
-        // Build folder name map
-        let folder_map: std::collections::HashMap<String, String> = data
+        // Build folder name map - FolderView.id is Option<FolderId>
+        let folder_map: std::collections::HashMap<FolderId, String> = data
             .folders
             .iter()
-            .map(|f| (f.id.clone(), f.name.clone()))
+            .filter_map(|f| f.id.clone().map(|id| (id, f.name.clone())))
             .collect();
 
         // Write ciphers
         for cipher in &data.ciphers {
+            // cipher.folder_id is Option<FolderId>
             let folder_name = cipher
                 .folder_id
                 .as_ref()

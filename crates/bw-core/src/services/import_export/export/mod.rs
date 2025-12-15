@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Export data structure (decrypted vault items)
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ExportData {
     pub folders: Vec<FolderView>,
     pub ciphers: Vec<CipherView>,

@@ -3,15 +3,15 @@
 //! Coordinates validation, encryption, API calls, and cache updates for
 //! creating, updating, and deleting vault items and folders.
 //!
-//! NOTE: Write operations require the user key for encryption. The session parameter
-//! must be provided to decrypt the user key from protected storage.
+//! NOTE: Write operations require the SDK Client to be initialized with keys.
 
 use super::{CipherService, ConfirmationService, ValidationService, VaultError};
-use crate::models::vault::{Cipher, CipherRequest, CipherView, Folder, FolderRequest};
+use crate::models::vault::{
+    Cipher, CipherId, CipherRequestModel, CipherView, Folder, FolderId, FolderRequestModel,
+    FolderView,
+};
 use crate::services::api::{ApiClient, BitwardenApiClient, endpoints};
-use crate::services::key_service::KeyService;
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
-use bitwarden_crypto::SymmetricCryptoKey;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,7 +24,6 @@ pub struct WriteService {
     cipher_service: Arc<CipherService>,
     validation_service: Arc<ValidationService>,
     confirmation_service: Arc<ConfirmationService>,
-    key_service: KeyService,
     account_manager: Arc<AccountManager>,
 }
 
@@ -38,24 +37,14 @@ impl WriteService {
         confirmation_service: Arc<ConfirmationService>,
         account_manager: Arc<AccountManager>,
     ) -> Self {
-        let key_service = KeyService::new(Arc::clone(&storage), Arc::clone(&account_manager));
         Self {
             api_client,
             storage,
             cipher_service,
             validation_service,
             confirmation_service,
-            key_service,
             account_manager,
         }
-    }
-
-    /// Get the user key from protected storage using the session key
-    async fn get_user_key(&self, session: &str) -> Result<SymmetricCryptoKey, VaultError> {
-        self.key_service
-            .get_user_key(session)
-            .await
-            .map_err(|e| VaultError::DecryptionError(e.to_string()))
     }
 
     /// Get the active user ID
@@ -73,36 +62,27 @@ impl WriteService {
     pub async fn create_cipher(
         &self,
         mut cipher_view: CipherView,
-        session: &str,
+        _session: &str,
     ) -> Result<Cipher, VaultError> {
-        // 1. Validate input structure BEFORE attempting key retrieval
-        // This ensures validation errors are returned even with invalid sessions
+        // 1. Validate input structure
         self.validation_service
             .validate_cipher_create(&cipher_view)?;
 
-        // 2. Get user key for encryption (only after validation passes)
-        let user_key = self.get_user_key(session).await?;
-
-        // 3. Generate ID if not present
-        if cipher_view.id.is_empty() {
-            cipher_view.id = uuid::Uuid::new_v4().to_string();
+        // 2. Generate ID if not present (SDK uses Option<CipherId>)
+        if cipher_view.id.is_none() {
+            cipher_view.id = Some(CipherId::new(uuid::Uuid::new_v4()));
         }
 
-        // Set timestamps
-        let now = Utc::now().to_rfc3339();
-        cipher_view.revision_date = now.clone();
-        if cipher_view.creation_date.is_none() {
-            cipher_view.creation_date = Some(now);
-        }
+        // 3. Set timestamps (SDK uses DateTime<Utc>)
+        let now = Utc::now();
+        cipher_view.revision_date = now;
+        cipher_view.creation_date = now;
 
-        // 4. Encrypt using SDK
-        let encrypted = self
-            .cipher_service
-            .encrypt_cipher(&cipher_view, &user_key)
-            .await?;
+        // 4. Encrypt using SDK (returns EncryptionContext)
+        let encryption_context = self.cipher_service.encrypt_cipher(cipher_view)?;
 
-        // 5. Convert to request format
-        let request = CipherRequest::from(encrypted.clone());
+        // 5. Convert to API request format
+        let request: CipherRequestModel = encryption_context.into();
 
         // 6. Send to API
         let created: Cipher = self
@@ -111,7 +91,7 @@ impl WriteService {
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
-        // 7. Update local cache (atomic)
+        // 7. Update local cache
         self.add_cipher_to_cache(&created).await?;
 
         Ok(created)
@@ -122,41 +102,38 @@ impl WriteService {
         &self,
         id: &str,
         mut cipher_view: CipherView,
-        session: &str,
+        _session: &str,
     ) -> Result<Cipher, VaultError> {
-        // 1. Validate item exists first
+        // 1. Validate item exists
         self.validate_cipher_exists(id).await?;
 
-        // 2. Ensure ID matches
-        cipher_view.id = id.to_string();
+        // 2. Parse and set ID
+        let cipher_id = id
+            .parse::<uuid::Uuid>()
+            .map_err(|_| VaultError::ItemNotFound)?;
+        cipher_view.id = Some(CipherId::new(cipher_id));
 
-        // 3. Validate update structure BEFORE attempting key retrieval
+        // 3. Validate update structure
         self.validation_service
             .validate_cipher_update(&cipher_view)?;
 
-        // 4. Get user key for encryption (only after validation passes)
-        let user_key = self.get_user_key(session).await?;
+        // 4. Update timestamp
+        cipher_view.revision_date = Utc::now();
 
-        // 5. Update timestamp
-        cipher_view.revision_date = Utc::now().to_rfc3339();
+        // 5. Encrypt using SDK
+        let encryption_context = self.cipher_service.encrypt_cipher(cipher_view)?;
 
-        // 6. Encrypt using SDK
-        let encrypted = self
-            .cipher_service
-            .encrypt_cipher(&cipher_view, &user_key)
-            .await?;
+        // 6. Convert to API request format
+        let request: CipherRequestModel = encryption_context.into();
 
-        // 7. Convert to request format
-        let request = CipherRequest::from(encrypted);
-
-        // 8. Send to API
+        // 7. Send to API
         let updated: Cipher = self
             .api_client
             .put_with_auth(&endpoints::api::ciphers::by_id(id), &request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
-        // 9. Update cache atomically
+        // 8. Update cache
         self.update_cipher_in_cache(&updated).await?;
 
         Ok(updated)
@@ -180,8 +157,6 @@ impl WriteService {
         }
 
         // 3. Send delete to API
-        // Soft delete uses PUT to /ciphers/{id}/delete (moves to trash)
-        // Permanent delete uses DELETE to /ciphers/{id} (permanently removes)
         if permanent {
             self.api_client
                 .delete_with_auth(&endpoints::api::ciphers::by_id(id))
@@ -198,7 +173,6 @@ impl WriteService {
         if permanent {
             self.remove_cipher_from_cache(id).await?;
         } else {
-            // Soft delete - mark with deletedDate
             self.mark_cipher_deleted(id).await?;
         }
 
@@ -233,7 +207,7 @@ impl WriteService {
         folder_id: Option<&str>,
         session: &str,
     ) -> Result<Cipher, VaultError> {
-        // 1. Validate cipher exists first
+        // 1. Validate cipher exists
         self.validate_cipher_exists(cipher_id).await?;
 
         // 2. Validate folder exists if specified
@@ -241,18 +215,20 @@ impl WriteService {
             self.validate_folder_exists(fid).await?;
         }
 
-        // 3. Get user key for decryption/encryption (only after validation passes)
-        let user_key = self.get_user_key(session).await?;
-
-        // 4. Get current cipher
+        // 3. Get current cipher
         let cipher = self.get_cipher(cipher_id).await?;
 
-        // 5. Decrypt, update folder, re-encrypt
-        let mut cipher_view = self
-            .cipher_service
-            .decrypt_cipher(&cipher, &user_key)
-            .await?;
-        cipher_view.folder_id = folder_id.map(String::from);
+        // 4. Decrypt cipher
+        let mut cipher_view = self.cipher_service.decrypt_cipher(cipher)?;
+
+        // 5. Update folder ID (SDK uses Option<FolderId>)
+        cipher_view.folder_id = folder_id
+            .map(|fid| {
+                fid.parse::<uuid::Uuid>()
+                    .map(FolderId::new)
+                    .ok()
+            })
+            .flatten();
 
         // 6. Update via API
         self.update_cipher(cipher_id, cipher_view, session).await
@@ -261,20 +237,24 @@ impl WriteService {
     // ========== Folder Operations ==========
 
     /// Create folder
-    pub async fn create_folder(&self, name: String, session: &str) -> Result<Folder, VaultError> {
-        // 1. Validate name BEFORE attempting key retrieval
+    pub async fn create_folder(&self, name: String, _session: &str) -> Result<Folder, VaultError> {
+        // 1. Validate name
         self.validation_service.validate_folder_name(&name)?;
 
-        // 2. Get user key for encryption (only after validation passes)
-        let user_key = self.get_user_key(session).await?;
+        // 2. Create folder view and encrypt
+        let folder_view = FolderView {
+            id: None,
+            name,
+            revision_date: Utc::now(),
+        };
+        let encrypted = self.cipher_service.encrypt_folder(folder_view)?;
 
-        // 3. Encrypt folder name using SDK
-        let encrypted_name = self.cipher_service.encrypt_string(&name, &user_key)?;
+        // 3. Create request model
+        let folder_request = FolderRequestModel {
+            name: encrypted.name.to_string(),
+        };
 
         // 4. Send to API
-        let folder_request = FolderRequest {
-            name: encrypted_name,
-        };
         let created: Folder = self
             .api_client
             .post_with_auth(endpoints::api::folders::BASE, &folder_request)
@@ -292,31 +272,40 @@ impl WriteService {
         &self,
         id: &str,
         name: String,
-        session: &str,
+        _session: &str,
     ) -> Result<Folder, VaultError> {
-        // 1. Validate folder exists first
+        // 1. Validate folder exists
         self.validate_folder_exists(id).await?;
 
-        // 2. Validate name BEFORE attempting key retrieval
+        // 2. Validate name
         self.validation_service.validate_folder_name(&name)?;
 
-        // 3. Get user key for encryption (only after validation passes)
-        let user_key = self.get_user_key(session).await?;
+        // 3. Parse folder ID
+        let folder_id = id
+            .parse::<uuid::Uuid>()
+            .map_err(|_| VaultError::FolderNotFound)?;
 
-        // 4. Encrypt folder name
-        let encrypted_name = self.cipher_service.encrypt_string(&name, &user_key)?;
-
-        // 5. Send to API
-        let folder_request = FolderRequest {
-            name: encrypted_name,
+        // 4. Create folder view and encrypt
+        let folder_view = FolderView {
+            id: Some(FolderId::new(folder_id)),
+            name,
+            revision_date: Utc::now(),
         };
+        let encrypted = self.cipher_service.encrypt_folder(folder_view)?;
+
+        // 5. Create request model
+        let folder_request = FolderRequestModel {
+            name: encrypted.name.to_string(),
+        };
+
+        // 6. Send to API
         let updated: Folder = self
             .api_client
             .put_with_auth(&endpoints::api::folders::by_id(id), &folder_request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
-        // 6. Update cache
+        // 7. Update cache
         self.update_folder_in_cache(&updated).await?;
 
         Ok(updated)
@@ -345,22 +334,21 @@ impl WriteService {
         let user_id = self.get_user_id().await?;
         let mut storage = self.storage.lock().await;
 
-        // Get current ciphers (HashMap keyed by ID)
         let mut ciphers: HashMap<String, Cipher> = storage
             .get(&StorageKey::UserCiphers.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
-            .ok_or(VaultError::NotSynced)?;
+            .unwrap_or_default();
 
-        // Add new cipher by ID
-        ciphers.insert(cipher.id.clone(), cipher.clone());
+        // Add cipher by ID (SDK uses Option<CipherId>)
+        if let Some(id) = &cipher.id {
+            ciphers.insert(id.to_string(), cipher.clone());
+        }
 
-        // Write ciphers
         storage
             .set(&StorageKey::UserCiphers.format(Some(&user_id)), &ciphers)
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
-        // Update last sync timestamp
         storage
             .set(
                 &StorageKey::UserLastSync.format(Some(&user_id)),
@@ -381,19 +369,21 @@ impl WriteService {
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        // Check cipher exists, then update by ID
-        if !ciphers.contains_key(&cipher.id) {
+        if let Some(id) = &cipher.id {
+            let id_str = id.to_string();
+            if !ciphers.contains_key(&id_str) {
+                return Err(VaultError::ItemNotFound);
+            }
+            ciphers.insert(id_str, cipher.clone());
+        } else {
             return Err(VaultError::ItemNotFound);
         }
-        ciphers.insert(cipher.id.clone(), cipher.clone());
 
-        // Write ciphers
         storage
             .set(&StorageKey::UserCiphers.format(Some(&user_id)), &ciphers)
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
-        // Update last sync timestamp
         storage
             .set(
                 &StorageKey::UserLastSync.format(Some(&user_id)),
@@ -414,16 +404,13 @@ impl WriteService {
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        // Remove cipher by ID
         ciphers.remove(id);
 
-        // Write ciphers
         storage
             .set(&StorageKey::UserCiphers.format(Some(&user_id)), &ciphers)
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
-        // Update last sync timestamp
         storage
             .set(
                 &StorageKey::UserLastSync.format(Some(&user_id)),
@@ -444,20 +431,17 @@ impl WriteService {
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        // Find and mark deleted by ID
         if let Some(cipher) = ciphers.get_mut(id) {
-            cipher.deleted_date = Some(Utc::now().to_rfc3339());
+            cipher.deleted_date = Some(Utc::now());
         } else {
             return Err(VaultError::ItemNotFound);
         }
 
-        // Write ciphers
         storage
             .set(&StorageKey::UserCiphers.format(Some(&user_id)), &ciphers)
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
-        // Update last sync timestamp
         storage
             .set(
                 &StorageKey::UserLastSync.format(Some(&user_id)),
@@ -476,9 +460,11 @@ impl WriteService {
         let mut folders: HashMap<String, Folder> = storage
             .get(&StorageKey::UserFolders.format(Some(&user_id)))
             .map_err(|e| VaultError::StorageError(e.to_string()))?
-            .ok_or(VaultError::NotSynced)?;
+            .unwrap_or_default();
 
-        folders.insert(folder.id.clone(), folder.clone());
+        if let Some(id) = &folder.id {
+            folders.insert(id.to_string(), folder.clone());
+        }
 
         storage
             .set(&StorageKey::UserFolders.format(Some(&user_id)), &folders)
@@ -505,10 +491,15 @@ impl WriteService {
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotSynced)?;
 
-        if !folders.contains_key(&folder.id) {
+        if let Some(id) = &folder.id {
+            let id_str = id.to_string();
+            if !folders.contains_key(&id_str) {
+                return Err(VaultError::FolderNotFound);
+            }
+            folders.insert(id_str, folder.clone());
+        } else {
             return Err(VaultError::FolderNotFound);
         }
-        folders.insert(folder.id.clone(), folder.clone());
 
         storage
             .set(&StorageKey::UserFolders.format(Some(&user_id)), &folders)

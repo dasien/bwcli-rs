@@ -6,9 +6,17 @@ use crate::services::import_export::export::{ExportData, ExportFormatter, Export
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-/// JSON export structure
+/// JSON export structure (for serialization only - uses references to avoid Clone requirement)
+#[derive(Debug, Serialize)]
+pub struct JsonExport<'a> {
+    pub encrypted: bool,
+    pub folders: &'a [FolderView],
+    pub items: &'a [CipherView],
+}
+
+/// Owned JSON export structure (for deserialization during import)
 #[derive(Debug, Serialize, Deserialize)]
-pub struct JsonExport {
+pub struct JsonExportOwned {
     pub encrypted: bool,
     pub folders: Vec<FolderView>,
     pub items: Vec<CipherView>,
@@ -40,8 +48,8 @@ impl ExportFormatter for JsonFormatter {
     ) -> Result<Vec<u8>, ExportError> {
         let export = JsonExport {
             encrypted: false,
-            folders: data.folders.clone(),
-            items: data.ciphers.clone(),
+            folders: &data.folders,
+            items: &data.ciphers,
         };
 
         // Pretty-print JSON with 2-space indentation
