@@ -109,6 +109,10 @@ enum Commands {
 async fn main() -> ExitCode {
     // Initialize tracing
     tracing_subscriber::fmt()
+        // Diagnostics must go to stderr: stdout carries the command's actual
+        // output, and `--response`/`--raw` consumers pipe it into jq. A single
+        // SDK log line on stdout makes that output unparseable.
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
@@ -118,7 +122,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     // Initialize application context (services) once
-    let ctx = match AppContext::new() {
+    let ctx = match AppContext::new().await {
         Ok(ctx) => ctx,
         Err(e) => {
             if !cli.global_args.quiet {

@@ -26,6 +26,7 @@ bitwarden-generators.workspace = true
 bitwarden-exporters.workspace = true
 bitwarden-send.workspace = true
 bitwarden-state.workspace = true
+bitwarden-pm.workspace = true
 bitwarden-encoding.workspace = true
 bitwarden-error.workspace = true
 

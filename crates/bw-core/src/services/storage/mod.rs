@@ -4,6 +4,7 @@ mod errors;
 mod json_storage;
 mod keys;
 mod path;
+pub use path::StoragePath;
 pub mod protected_storage;
 mod traits;
 

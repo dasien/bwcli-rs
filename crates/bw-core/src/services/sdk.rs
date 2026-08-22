@@ -5,6 +5,15 @@
 
 use anyhow::Result;
 use bitwarden_core::auth::{ClientManagedTokenHandler, ClientManagedTokens};
+use bitwarden_core::client::persisted_state::OrganizationSharedKey;
+use bitwarden_core::key_management::LocalUserDataKeyState;
+use bitwarden_send::Send as SendItem;
+use bitwarden_state::SettingItem;
+use bitwarden_state::repository::{RepositoryItem, RepositoryMigrationStep, RepositoryMigrations};
+use bitwarden_vault::{Cipher, Folder};
+use bitwarden_state::registry::StateRegistry;
+use bitwarden_state::DatabaseConfiguration;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 // Re-export SDK types for use throughout the crate
@@ -63,6 +72,63 @@ pub fn create_sdk_client_with_tokens(
         Some(client_settings(api_url, identity_url)),
         ClientManagedTokenHandler::new(tokens),
     ))
+}
+
+/// Create the SDK client with persistent SDK-managed state.
+///
+/// State lives in `{appdata}/user.sqlite`, one table per registered repository
+/// (`Cipher`, `Folder`, `Send`, `SettingItem`, `OrganizationSharedKey`). This is
+/// the store the SDK's own clients read and write, so registering it is what
+/// lets us hand vault CRUD, sync and unlock over to the SDK instead of
+/// maintaining parallel implementations.
+///
+/// `db_name` is fixed rather than per-user: the CLI has a single active account
+/// at a time, and `logout` wipes the registry.
+pub async fn create_sdk_client_with_state(
+    api_url: Option<String>,
+    identity_url: Option<String>,
+    tokens: Arc<dyn ClientManagedTokens>,
+    appdata_dir: PathBuf,
+) -> Result<Client> {
+    let registry = StateRegistry::new_with_db(
+        DatabaseConfiguration::Sqlite {
+            db_name: "user".to_string(),
+            folder_path: appdata_dir,
+        },
+        state_migrations(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("could not open the local state database: {e}"))?;
+
+    Ok(Client::builder()
+        .with_settings(client_settings(api_url, identity_url))
+        .with_token_handler(ClientManagedTokenHandler::new(tokens))
+        .with_state(registry)
+        .build())
+}
+
+/// Repository tables to create in the state database.
+///
+/// This mirrors `bitwarden_pm::migrations::get_sdk_managed_migrations` and adds
+/// `LocalUserDataKeyState`, which that list omits even though
+/// `initialize_user_crypto` tries to initialize it — without the table, every
+/// unlock logs `Unable to initialize local user data key` at ERROR level.
+/// Upstream's own `bw` hits the same thing.
+///
+/// Order matters and is append-only: removing a repository needs an explicit
+/// `Remove` step, not a deletion from this list. Keep the shared entries in the
+/// same order as the SDK's list so the two stay compatible.
+fn state_migrations() -> RepositoryMigrations {
+    use RepositoryMigrationStep::*;
+
+    RepositoryMigrations::new(vec![
+        Add(Cipher::data()),
+        Add(Folder::data()),
+        Add(SettingItem::data()),
+        Add(OrganizationSharedKey::data()),
+        Add(SendItem::data()),
+        Add(LocalUserDataKeyState::data()),
+    ])
 }
 
 /// Settings shared by every client we build.

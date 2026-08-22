@@ -1,10 +1,10 @@
 use super::{
     api::{BitwardenApiClient, Environment, StoredAccessToken},
-    create_sdk_client_with_tokens,
+    create_sdk_client_with_state,
     key_service::KeyService,
     send_repository::JsonSendRepository,
     sdk::Client,
-    storage::{AccountManager, JsonFileStorage},
+    storage::{AccountManager, JsonFileStorage, StoragePath},
 };
 use anyhow::Result;
 use std::path::PathBuf;
@@ -36,12 +36,16 @@ impl ServiceContainer {
     /// * `identity_url` - Optional Identity server URL
     /// * `storage_path` - Optional custom storage directory path
     /// * `timeout_seconds` - Optional API request timeout
-    pub fn new(
+    pub async fn new(
         api_url: Option<String>,
         identity_url: Option<String>,
         storage_path: Option<PathBuf>,
         timeout_seconds: Option<u64>,
     ) -> Result<Self> {
+        // Resolve the appdata directory once: both the legacy JSON store and the
+        // SDK's SQLite state live there.
+        let appdata_dir = StoragePath::resolve(storage_path.clone())?;
+
         // Create storage wrapped in Mutex since Storage trait methods need &mut self
         let storage = Arc::new(Mutex::new(JsonFileStorage::new(storage_path)?));
 
@@ -68,15 +72,19 @@ impl ServiceContainer {
         // Give the SDK client our access token so its generated API clients are
         // authenticated, and so an expired token gets refreshed (the SDK's
         // client-managed handler attaches but never renews).
-        let sdk = create_sdk_client_with_tokens(
+        let sdk = create_sdk_client_with_state(
             api_url.clone(),
             identity_url.clone(),
             Arc::new(StoredAccessToken::new(Arc::clone(&api_client))),
-        )?;
+            appdata_dir,
+        )
+        .await?;
 
-        // Point the SDK's send CRUD at our state file. Without this it falls
-        // back to an in-memory database that starts empty every invocation, so
-        // `bw send list` would never return anything.
+        // Sends still read and write the legacy JSON store: nothing populates the
+        // SQLite `Send` table yet, because sync writes to data.json. Registering
+        // a client-managed repository takes precedence over the SDK-managed one,
+        // so this keeps sends working while the migration proceeds. Remove it
+        // once sync writes through the SDK.
         let account_manager = Arc::new(AccountManager::new(Arc::clone(&storage)));
         sdk.platform()
             .state()
@@ -135,9 +143,36 @@ impl ServiceContainer {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_service_container_creation() {
-        let container = ServiceContainer::new(None, None, None, None);
+    #[tokio::test]
+    async fn test_service_container_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let container = ServiceContainer::new(
+            None,
+            None,
+            Some(temp.path().to_path_buf()),
+            None,
+        )
+        .await;
         assert!(container.is_ok(), "Should create service container");
+    }
+
+    /// The SDK's state database must actually be created on disk, otherwise
+    /// every SDK client silently falls back to an empty in-memory store.
+    #[tokio::test]
+    async fn creates_the_sqlite_state_database() {
+        let temp = tempfile::tempdir().unwrap();
+        ServiceContainer::new(None, None, Some(temp.path().to_path_buf()), None)
+            .await
+            .unwrap();
+
+        assert!(
+            temp.path().join("user.sqlite").exists(),
+            "expected user.sqlite in {:?}, found: {:?}",
+            temp.path(),
+            std::fs::read_dir(temp.path())
+                .unwrap()
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect::<Vec<_>>()
+        );
     }
 }

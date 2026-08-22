@@ -20,8 +20,8 @@ pub struct AppContext {
 
 impl AppContext {
     /// Create a new application context with default configuration
-    pub fn new() -> Result<Self> {
-        let container = ServiceContainer::new(None, None, None, None)?;
+    pub async fn new() -> Result<Self> {
+        let container = ServiceContainer::new(None, None, None, None).await?;
         Ok(Self {
             container: Arc::new(container),
         })
@@ -29,14 +29,14 @@ impl AppContext {
 
     /// Create application context with custom configuration
     #[allow(dead_code)]
-    pub fn with_config(
+    pub async fn with_config(
         api_url: Option<String>,
         identity_url: Option<String>,
         storage_path: Option<std::path::PathBuf>,
         timeout_seconds: Option<u64>,
     ) -> Result<Self> {
         let container =
-            ServiceContainer::new(api_url, identity_url, storage_path, timeout_seconds)?;
+            ServiceContainer::new(api_url, identity_url, storage_path, timeout_seconds).await?;
         Ok(Self {
             container: Arc::new(container),
         })
