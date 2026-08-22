@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 pub struct TokenRefreshRequest {
     pub grant_type: String, // Always "refresh_token"
     pub refresh_token: String,
+    /// Required by the identity server for the refresh_token grant. Omitting it
+    /// makes every refresh fail with `invalid_request`, which surfaced as an
+    /// unrecoverable 401 once the access token expired.
+    pub client_id: String,
 }
 
 /// Token response from authentication/refresh endpoints

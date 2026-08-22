@@ -1,7 +1,6 @@
 use crate::models::{
     api::{
         ApiKeyLoginRequest, LoginResponse, PasswordLoginRequest, PreloginRequest, PreloginResponse,
-        ProfileResponse,
     },
     auth::{DeviceInfo, LoginResult, TwoFactorData, UnlockResult},
     state::{KdfConfig, KdfType},
@@ -16,6 +15,7 @@ use crate::services::{
     },
 };
 use anyhow::Result;
+use bitwarden_core::auth::JwtToken;
 use bitwarden_crypto::{CryptoError, Kdf, MasterKey, SymmetricCryptoKey};
 use secrecy::{ExposeSecret, Secret};
 use std::sync::Arc;
@@ -110,9 +110,8 @@ impl AuthService {
             None
         };
 
-        // Step 6: Fetch user profile
-        debug!("Fetching user profile");
-        let profile = self.fetch_profile(&login_response.access_token).await?;
+        // Step 6: Identify the user from the token's claims (no extra round trip)
+        let (user_id, email) = Self::identify_user(&login_response.access_token)?;
 
         // Step 7: Generate session key using SDK
         debug!("Generating session key");
@@ -128,7 +127,7 @@ impl AuthService {
                 }
             })?;
 
-            let protected_key = make_protected_key(&user_key_protected_storage_key(&profile.id));
+            let protected_key = make_protected_key(&user_key_protected_storage_key(&user_id));
 
             let mut storage = self.storage.lock().await;
             storage
@@ -141,8 +140,8 @@ impl AuthService {
         // Step 9: Persist authentication state
         debug!("Persisting authentication state");
         self.persist_auth_state(
-            &profile.id,
-            &profile.email,
+            &user_id,
+            &email,
             &login_response.access_token,
             &login_response.refresh_token,
             login_response.key.as_deref(),
@@ -154,8 +153,8 @@ impl AuthService {
         info!("Login successful");
 
         Ok(LoginResult {
-            user_id: profile.id,
-            email: profile.email,
+            user_id: user_id.clone(),
+            email: email.clone(),
             session_key: session_key_str,
         })
     }
@@ -198,8 +197,8 @@ impl AuthService {
                 message: format!("API key authentication failed: {}", e),
             })?;
 
-        // Fetch user profile
-        let profile = self.fetch_profile(&login_response.access_token).await?;
+        // Identify the user from the token's claims
+        let (user_id, email) = Self::identify_user(&login_response.access_token)?;
 
         // Generate session key using SDK
         let session_key = generate_session_key();
@@ -208,8 +207,8 @@ impl AuthService {
         // Note: API key login doesn't have user key or KDF config
         // Persist minimal authentication state
         self.persist_api_key_auth_state(
-            &profile.id,
-            &profile.email,
+            &user_id,
+            &email,
             &login_response.access_token,
             &login_response.refresh_token,
         )
@@ -218,8 +217,8 @@ impl AuthService {
         info!("API key login successful");
 
         Ok(LoginResult {
-            user_id: profile.id,
-            email: profile.email,
+            user_id: user_id.clone(),
+            email: email.clone(),
             session_key: session_key_str,
         })
     }
@@ -533,18 +532,26 @@ impl AuthService {
             })
     }
 
-    /// Fetch user profile
-    async fn fetch_profile(&self, access_token: &str) -> Result<ProfileResponse, AuthError> {
-        // Use get_authenticated which takes the token directly,
-        // avoiding the need to store it before the profile fetch
-        // Note: path is relative to api_url (https://api.bitwarden.com), so no /api prefix
-        let profile: ProfileResponse = self
-            .api_client
-            .get_authenticated(endpoints::api::PROFILE, access_token)
-            .await
-            .map_err(|e| AuthError::Api(e.into()))?;
+    /// Identify the user from the access token's own claims.
+    ///
+    /// Replaces a `GET /accounts/profile` round trip: the id and email we need
+    /// are already in the JWT we were just issued. That also retires the
+    /// hand-rolled `ProfileResponse` model — a field rename there would have
+    /// broken login exactly as `ForcePasswordReset` did.
+    ///
+    /// The SDK notes `JwtToken` does not verify the signature. That is fine
+    /// here: the token came directly from the identity server over TLS, and we
+    /// are reading our own identity from it, not making a trust decision.
+    fn identify_user(access_token: &str) -> Result<(String, String), AuthError> {
+        let token: JwtToken = access_token.parse().map_err(|e| AuthError::Other(format!(
+            "the server returned an access token we could not read: {e}"
+        )))?;
 
-        Ok(profile)
+        let email = token.email.ok_or_else(|| {
+            AuthError::Other("the access token did not identify the user's email".to_string())
+        })?;
+
+        Ok((token.sub, email))
     }
 
     /// Get or create device info
@@ -681,5 +688,46 @@ impl AuthService {
         storage.flush().await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::AuthService;
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    /// Build an unsigned JWT. `JwtToken` does not verify signatures, which is
+    /// fine: the token arrives straight from the identity server over TLS and we
+    /// only read our own identity out of it.
+    fn jwt(payload: &str) -> String {
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+        let body = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        format!("{header}.{body}.signature")
+    }
+
+    #[test]
+    fn reads_user_id_and_email_from_the_token() {
+        let token = jwt(
+            r#"{"exp":1787419631,"sub":"73d54ce4-b9f5-4bf1-a921-b3ad0104a632","email":"user@example.com","scope":["api","offline_access"]}"#,
+        );
+
+        let (user_id, email) = AuthService::identify_user(&token).unwrap();
+
+        assert_eq!(user_id, "73d54ce4-b9f5-4bf1-a921-b3ad0104a632");
+        assert_eq!(email, "user@example.com");
+    }
+
+    #[test]
+    fn rejects_a_token_without_an_email_claim() {
+        let token = jwt(r#"{"exp":1787419631,"sub":"abc","scope":["api"]}"#);
+
+        let err = AuthService::identify_user(&token).unwrap_err();
+        assert!(err.to_string().contains("email"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_a_malformed_token() {
+        let err = AuthService::identify_user("not-a-jwt").unwrap_err();
+        assert!(err.to_string().contains("could not read"), "got: {err}");
     }
 }

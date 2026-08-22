@@ -7,7 +7,8 @@
 //!   invocation performed a full download regardless of server state
 
 use bw_core::models::vault::Organization;
-use bw_core::services::api::{BitwardenApiClient, Environment};
+use bw_core::services::api::{BitwardenApiClient, Environment, StoredAccessToken};
+use bw_core::services::create_sdk_client_with_tokens;
 use bw_core::services::storage::{JsonFileStorage, Storage, StorageKey};
 use bw_core::services::vault::SyncService;
 use std::collections::HashMap;
@@ -96,8 +97,20 @@ async fn setup(
         BitwardenApiClient::new(environment, Arc::clone(&storage), None).unwrap(),
     );
 
+    // Sync now talks to the server through the SDK's generated API clients, so
+    // the SDK client must point at the mock server and carry our stored token.
+    // (`https_only` is only enforced in release builds, so http:// works here.)
+    let sdk = Arc::new(
+        create_sdk_client_with_tokens(
+            Some(server.uri()),
+            Some(server.uri()),
+            Arc::new(StoredAccessToken::new(Arc::clone(&api_client))),
+        )
+        .unwrap(),
+    );
+
     (
-        SyncService::new(api_client, Arc::clone(&storage)),
+        SyncService::new(api_client, Arc::clone(&storage), sdk),
         storage,
         temp_dir,
     )
@@ -119,7 +132,7 @@ async fn sync_persists_organizations_from_profile() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/api/sync"))
+        .and(path("/sync"))
         .respond_with(ResponseTemplate::new(200).set_body_json(sync_response_with_org()))
         .mount(&server)
         .await;
@@ -150,14 +163,14 @@ async fn sync_is_skipped_when_server_reports_no_changes() {
     let server_revision = last_sync - chrono::Duration::hours(1);
 
     Mock::given(method("GET"))
-        .and(path("/api/accounts/revision-date"))
+        .and(path("/accounts/revision-date"))
         .respond_with(ResponseTemplate::new(200).set_body_json(server_revision.timestamp_millis()))
         .mount(&server)
         .await;
 
     // Must not be called.
     Mock::given(method("GET"))
-        .and(path("/api/sync"))
+        .and(path("/sync"))
         .respond_with(ResponseTemplate::new(200).set_body_json(sync_response_with_org()))
         .expect(0)
         .mount(&server)
@@ -182,13 +195,13 @@ async fn force_downloads_even_when_server_reports_no_changes() {
     let server_revision = last_sync - chrono::Duration::hours(1);
 
     Mock::given(method("GET"))
-        .and(path("/api/accounts/revision-date"))
+        .and(path("/accounts/revision-date"))
         .respond_with(ResponseTemplate::new(200).set_body_json(server_revision.timestamp_millis()))
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/api/sync"))
+        .and(path("/sync"))
         .respond_with(ResponseTemplate::new(200).set_body_json(sync_response_with_org()))
         .expect(1)
         .mount(&server)
@@ -210,13 +223,13 @@ async fn sync_downloads_when_server_has_newer_revision() {
     let server_revision = chrono::Utc::now();
 
     Mock::given(method("GET"))
-        .and(path("/api/accounts/revision-date"))
+        .and(path("/accounts/revision-date"))
         .respond_with(ResponseTemplate::new(200).set_body_json(server_revision.timestamp_millis()))
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/api/sync"))
+        .and(path("/sync"))
         .respond_with(ResponseTemplate::new(200).set_body_json(sync_response_with_org()))
         .expect(1)
         .mount(&server)
@@ -235,13 +248,13 @@ async fn negative_revision_date_reports_deleted_account() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/api/accounts/revision-date"))
+        .and(path("/accounts/revision-date"))
         .respond_with(ResponseTemplate::new(200).set_body_json(-1i64))
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/api/sync"))
+        .and(path("/sync"))
         .respond_with(ResponseTemplate::new(200).set_body_json(sync_response_with_org()))
         .expect(0)
         .mount(&server)

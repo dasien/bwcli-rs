@@ -191,6 +191,45 @@ create/edit/delete/restore round-trips. Organizations and sends now persist,
 but both were empty in the test vault, so their *parsing* paths remain
 unexercised.
 
+## Phase 8: removing hand-rolled code (in progress)
+
+Done:
+- **SDK client is now authenticated.** `StoredAccessToken` implements
+  `ClientManagedTokens` over our stored token, wired via
+  `Client::new_with_token_handler`. Before this the SDK client had no
+  credentials, which is *why* the CLI carried a second HTTP stack — any
+  `*_api()` call would have gone out unauthenticated.
+- **Sync moved to the generated clients.** `sync_api().get` and
+  `accounts_api().get_account_revision_date` replace the hand-rolled calls;
+  `endpoints::api::{SYNC, ACCOUNT_REVISION_DATE}` deleted.
+- **`GET /accounts/profile` eliminated.** Identity now comes from the access
+  token's own claims via `JwtToken`, removing a round trip *and* the
+  hand-rolled `ProfileResponse` model — one less thing that can break the way
+  `ForcePasswordReset` did.
+
+Two pre-existing bugs this uncovered, both latent because refresh had never
+actually run:
+- **`TokenManager::refresh_access_token` deadlocked.** The `refresh_state` guard
+  was only dropped on the "already refreshing" path; the other path re-locked
+  the same non-reentrant mutex while still holding it. Any refresh hung forever.
+- **Refresh omitted `client_id`**, so the identity server answered
+  `invalid_request`. Combined with the deadlock, token refresh could never have
+  worked — the CLI simply stopped functioning an hour after login. Also added the
+  missing `storage.flush()`, without which renewed tokens were never persisted.
+
+Not worth doing, with reasons:
+- **Cipher/folder write endpoints.** The generated clients return
+  `CipherResponseModel`, and `TryFrom<CipherResponseModel> for Cipher` was
+  removed in 3.0.0 (only `CipherDetailsResponseModel` has one). Migrating would
+  need an uglier conversion hop than the current code. These are properly
+  retired by adopting `CiphersClient`, which is gated on the state decision.
+- **`services/api/environment.rs`.** No SDK equivalent; `ClientSettings` models
+  only `api_url`/`identity_url`, not icons/notifications/events/web-vault.
+
+Still to do: `bitwarden-auth` `login_via_password` (no 2FA or API-key support,
+so the hand-rolled path has to stay for those), and replacing
+`services/crypto.rs` with `MasterPasswordAuthenticationData::derive`.
+
 ## Do not adopt
 
 - **`bitwarden-sensitive-value`** — does not zeroize, serializes transparently.

@@ -9,4 +9,5 @@ mod traits;
 pub use client::BitwardenApiClient;
 pub use environment::Environment;
 pub use errors::ApiError;
+pub use token_manager::{StoredAccessToken, TokenManager};
 pub use traits::ApiClient;

@@ -197,6 +197,37 @@ impl BitwardenApiClient {
         }
     }
 
+    /// A usable access token, refreshing it first if it is expired or close to
+    /// expiring.
+    ///
+    /// The SDK's `ClientManagedTokenHandler` attaches whatever token we hand it
+    /// but never refreshes, so anything driving the SDK's generated API clients
+    /// has to come through here or it will start 401ing after an hour.
+    pub async fn valid_access_token(&self) -> Option<String> {
+        let current = self.token_manager.get_access_token().await.ok().flatten();
+
+        if let Some(token) = &current
+            && !access_token_expires_within(token.expose_secret(), TOKEN_REFRESH_MARGIN_SECS)
+        {
+            return Some(token.expose_secret().to_string());
+        }
+
+        // Expired, expiring imminently, or unreadable: try to renew.
+        match self
+            .token_manager
+            .refresh_access_token(|req| async { self.post_token_refresh(req).await })
+            .await
+        {
+            Ok(token) => Some(token.expose_secret().to_string()),
+            Err(e) => {
+                tracing::debug!("Could not refresh the access token: {e}");
+                // Fall back to whatever we had; the server will reject it with a
+                // clearer error than we can produce here.
+                current.map(|t| t.expose_secret().to_string())
+            }
+        }
+    }
+
     /// Extract error message from response body
     async fn extract_error_message(&self, response: Response) -> Result<String> {
         let text = response.text().await?;
@@ -703,4 +734,24 @@ mod tests {
         assert!(describe_error_body("<html>502</html>").contains("502"));
         assert_eq!(describe_error_body("   "), "empty response body");
     }
+}
+
+/// Refresh this long before expiry rather than waiting for a 401.
+const TOKEN_REFRESH_MARGIN_SECS: u64 = 300;
+
+/// Whether a JWT access token expires within `margin` seconds.
+///
+/// An unparseable token counts as expiring, so we attempt a refresh rather than
+/// sending something the server will reject.
+fn access_token_expires_within(token: &str, margin: u64) -> bool {
+    use bitwarden_core::auth::JwtToken;
+
+    let Ok(parsed) = token.parse::<JwtToken>() else {
+        return true;
+    };
+
+    let now = chrono::Utc::now().timestamp();
+    let cutoff = now.saturating_add(margin as i64);
+
+    (parsed.exp as i64) <= cutoff
 }

@@ -4,9 +4,10 @@
 //! Uses TypeScript CLI compatible flat storage format with user-namespaced keys.
 
 use super::errors::VaultError;
-use crate::models::vault::{parse_sync_response, SyncResponseModel};
-use crate::services::api::{ApiClient, BitwardenApiClient, endpoints};
+use crate::models::vault::parse_sync_response;
+use crate::services::api::{ApiClient, BitwardenApiClient};
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
+use bitwarden_core::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -15,14 +16,25 @@ use tokio::sync::Mutex;
 pub struct SyncService {
     api_client: Arc<BitwardenApiClient>,
     storage: Arc<Mutex<JsonFileStorage>>,
+    sdk: Arc<Client>,
 }
 
 impl SyncService {
-    pub fn new(api_client: Arc<BitwardenApiClient>, storage: Arc<Mutex<JsonFileStorage>>) -> Self {
+    pub fn new(
+        api_client: Arc<BitwardenApiClient>,
+        storage: Arc<Mutex<JsonFileStorage>>,
+        sdk: Arc<Client>,
+    ) -> Self {
         Self {
             api_client,
             storage,
+            sdk,
         }
+    }
+
+    /// Generated API clients, authenticated via the SDK's token handler.
+    fn api(&self) -> std::sync::Arc<bitwarden_core::client::ApiConfigurations> {
+        self.sdk.internal.get_api_configurations()
     }
 
     /// Sync vault from server
@@ -57,10 +69,14 @@ impl SyncService {
             }
         }
 
-        // Fetch vault data from API using SDK API model
-        let sync_response: SyncResponseModel = self
+        // Fetch vault data through the SDK's generated client. Its response
+        // models are all-Option and tolerant of unknown fields, unlike
+        // hand-rolled ones.
+        let sync_response = self
+            .api()
             .api_client
-            .get_with_auth(endpoints::api::SYNC)
+            .sync_api()
+            .get(None)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
@@ -166,8 +182,10 @@ impl SyncService {
         };
 
         let revision_ms: i64 = match self
+            .api()
             .api_client
-            .get_with_auth(endpoints::api::ACCOUNT_REVISION_DATE)
+            .accounts_api()
+            .get_account_revision_date()
             .await
         {
             Ok(ms) => ms,

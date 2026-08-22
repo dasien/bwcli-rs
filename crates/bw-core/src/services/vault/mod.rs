@@ -58,7 +58,11 @@ impl VaultService {
         sdk_client: Arc<Client>,
         account_manager: Arc<AccountManager>,
     ) -> Self {
-        let sync_service = SyncService::new(Arc::clone(&api_client), Arc::clone(&storage));
+        let sync_service = SyncService::new(
+            Arc::clone(&api_client),
+            Arc::clone(&storage),
+            Arc::clone(&sdk_client),
+        );
         let cipher_service = CipherService::new(sdk_client);
         let search_service = SearchService::new();
         let totp_service = TotpService::new();

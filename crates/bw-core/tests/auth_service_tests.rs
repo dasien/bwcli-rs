@@ -18,6 +18,24 @@ use wiremock::{
     matchers::{body_string_contains, method, path},
 };
 
+/// Build an unsigned JWT carrying the identity claims login now reads.
+///
+/// The CLI no longer calls `GET /accounts/profile`; it takes the user id and
+/// email from the access token's own claims, so test tokens have to be
+/// real-shaped JWTs.
+fn test_jwt(sub: &str, email: &str) -> String {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let payload = serde_json::json!({
+        "exp": 1_900_000_000u64,
+        "sub": sub,
+        "email": email,
+        "scope": ["api", "offline_access"],
+    })
+    .to_string();
+    format!("{header}.{}.signature", URL_SAFE_NO_PAD.encode(payload))
+}
+
 /// Test credentials - these are only used in tests, not real credentials
 const TEST_EMAIL: &str = "test@example.com";
 const TEST_PASSWORD: &str = "test_password";
@@ -79,7 +97,7 @@ async fn setup_login_mocks(mock_server: &MockServer, encrypted_user_key: &str) {
         .and(path("/identity/connect/token"))
         .and(body_string_contains("grant_type=password"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token": "test_access_token",
+            "access_token": test_jwt("user_id_123", TEST_EMAIL),
             "expires_in": 3600,
             "token_type": "Bearer",
             "refresh_token": "test_refresh_token",
@@ -91,19 +109,6 @@ async fn setup_login_mocks(mock_server: &MockServer, encrypted_user_key: &str) {
         .mount(mock_server)
         .await;
 
-    // Mock profile response
-    Mock::given(method("GET"))
-        .and(path("/api/accounts/profile"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id": "user_id_123",
-            "name": "Test User",
-            "email": TEST_EMAIL,
-            "emailVerified": true,
-            "premium": false,
-            "securityStamp": "security_stamp_123",
-        })))
-        .mount(mock_server)
-        .await;
 }
 
 #[tokio::test]
@@ -205,27 +210,13 @@ async fn test_login_with_api_key_success() {
         .and(path("/identity/connect/token"))
         .and(body_string_contains("grant_type=client_credentials"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token": "api_key_access_token",
+            "access_token": test_jwt("api_user_id", "api@example.com"),
             "expires_in": 3600,
             "token_type": "Bearer",
             "refresh_token": "api_key_refresh_token",
             "Kdf": 0,
             "KdfIterations": TEST_KDF_ITERATIONS,
             "ResetMasterPassword": false,
-        })))
-        .mount(&mock_server)
-        .await;
-
-    // Mock profile response
-    Mock::given(method("GET"))
-        .and(path("/api/accounts/profile"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id": "api_user_id",
-            "name": "API User",
-            "email": "api@example.com",
-            "emailVerified": true,
-            "premium": true,
-            "securityStamp": "api_security_stamp",
         })))
         .mount(&mock_server)
         .await;

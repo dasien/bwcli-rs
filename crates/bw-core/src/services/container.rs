@@ -1,6 +1,6 @@
 use super::{
-    api::{BitwardenApiClient, Environment},
-    create_sdk_client,
+    api::{BitwardenApiClient, Environment, StoredAccessToken},
+    create_sdk_client_with_tokens,
     key_service::KeyService,
     send_repository::JsonSendRepository,
     sdk::Client,
@@ -42,8 +42,6 @@ impl ServiceContainer {
         storage_path: Option<PathBuf>,
         timeout_seconds: Option<u64>,
     ) -> Result<Self> {
-        let sdk = create_sdk_client(api_url.clone(), identity_url.clone())?;
-
         // Create storage wrapped in Mutex since Storage trait methods need &mut self
         let storage = Arc::new(Mutex::new(JsonFileStorage::new(storage_path)?));
 
@@ -53,7 +51,8 @@ impl ServiceContainer {
             (None, None) => Environment::default_cloud(),
             _ => {
                 let base_url = api_url
-                    .or(identity_url)
+                    .clone()
+                    .or_else(|| identity_url.clone())
                     .unwrap_or_else(|| "https://vault.bitwarden.com".to_string());
                 Environment::from_base_url(&base_url)?
             }
@@ -65,6 +64,15 @@ impl ServiceContainer {
             Arc::clone(&storage),
             timeout_seconds,
         )?);
+
+        // Give the SDK client our access token so its generated API clients are
+        // authenticated, and so an expired token gets refreshed (the SDK's
+        // client-managed handler attaches but never renews).
+        let sdk = create_sdk_client_with_tokens(
+            api_url.clone(),
+            identity_url.clone(),
+            Arc::new(StoredAccessToken::new(Arc::clone(&api_client))),
+        )?;
 
         // Point the SDK's send CRUD at our state file. Without this it falls
         // back to an in-memory database that starts empty every invocation, so

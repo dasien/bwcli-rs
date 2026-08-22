@@ -4,6 +4,8 @@
 //! It re-exports types from the Bitwarden SDK for use throughout the CLI.
 
 use anyhow::Result;
+use bitwarden_core::auth::{ClientManagedTokenHandler, ClientManagedTokens};
+use std::sync::Arc;
 
 // Re-export SDK types for use throughout the crate
 pub use bitwarden_core::{Client, ClientSettings, DeviceType};
@@ -40,6 +42,31 @@ pub fn get_device_type() -> DeviceType {
 /// # Returns
 /// Configured SDK client ready for authentication and vault operations
 pub fn create_sdk_client(api_url: Option<String>, identity_url: Option<String>) -> Result<Client> {
+    Ok(Client::new(Some(client_settings(api_url, identity_url))))
+}
+
+/// Create the SDK client with access to our stored access token.
+///
+/// Prefer this over [`create_sdk_client`] anywhere the client will make
+/// authenticated calls: without a token handler the SDK's generated API clients
+/// send no credentials, which is why the CLI historically maintained a second,
+/// separate HTTP stack.
+///
+/// `ClientManagedTokenHandler` attaches the bearer token but does not refresh
+/// it — refresh remains ours.
+pub fn create_sdk_client_with_tokens(
+    api_url: Option<String>,
+    identity_url: Option<String>,
+    tokens: Arc<dyn ClientManagedTokens>,
+) -> Result<Client> {
+    Ok(Client::new_with_token_handler(
+        Some(client_settings(api_url, identity_url)),
+        ClientManagedTokenHandler::new(tokens),
+    ))
+}
+
+/// Settings shared by every client we build.
+fn client_settings(api_url: Option<String>, identity_url: Option<String>) -> ClientSettings {
     // Start from the SDK defaults (correct for Bitwarden cloud) and override only
     // what the CLI is responsible for. Spreading `..default()` rather than listing
     // every field keeps this compiling when the SDK adds settings, which is how
@@ -60,7 +87,7 @@ pub fn create_sdk_client(api_url: Option<String>, identity_url: Option<String>) 
         settings.identity_url = url;
     }
 
-    Ok(Client::new(Some(settings)))
+    settings
 }
 
 #[cfg(test)]
