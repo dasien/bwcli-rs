@@ -15,7 +15,48 @@ defects that analysis turned up along the way.
   commit (currently `9794da58`) so the target doesn't move mid-change, then
   resume tracking.
 
-## Deferred decision: on-disk state format
+## Decided (2026-08-22): go SDK-native, and target TS-CLI replacement
+
+**Goal.** bwcli-rs is intended to *replace* the TypeScript CLI, not coexist with
+it. Users are not expected to run both against one state file, so on-disk
+interop is explicitly a non-goal. The long-term acceptance criterion is
+different: **every TS-CLI command must have a working or stubbed replacement.**
+
+**State layer: SDK-native.** Adopt `bitwarden-state` (SQLite), `bitwarden-pm`,
+`bitwarden-unlock` and `PasswordManagerTokenHandler`; retire the `data.json`
+machinery; ship a one-time importer for users coming from the TS CLI.
+
+What tipped it: the interop we were protecting **did not exist**. Real
+TS-CLI-written `data.json` (v2025.11.0) stores cipher `permissions` as
+`{delete, response, restore}`, and SDK `CipherPermissions` is
+`deny_unknown_fields` with only `{delete, restore}` — so every TS-written cipher
+fails to deserialize. We could not read genuine TS state, and our own sync
+writes a different shape. The two were already mutually incompatible; keeping
+`data.json` was paying a cost for a benefit we never had.
+
+Secondary benefit: letting the SDK own tokens removes the class of bug that
+produced the deadlocked, `client_id`-less, unflushed refresh path.
+
+## TS-CLI parity matrix (as of 2026-08-22)
+
+Top-level commands the TS CLI has and we do not:
+`completion`, `device-approval`, `sdk-version`, `serve`, `share`, `update`.
+
+Ours that exist but are stubs:
+`config`, `decrypt` (not a TS command at all — candidate for removal),
+`confirm`, `login sso`, `list org-collections`, `list org-members`,
+`create attachment`, `create org-collection`, `edit item-collections`,
+`edit org-collection`, `delete attachment`, `delete org-collection`,
+`get attachment|collection|org|exposed|fingerprint`, file Sends,
+org import/export.
+
+Working: `login` (password + API key, 2FA, new-device OTP), `logout`, `lock`,
+`unlock`, `status`, `sync`, `list items|folders|collections|organizations`,
+`get item|username|password|uri|totp|folder|template`, `create item|folder`,
+`edit item|folder`, `delete item|folder`, `restore`, `move`, `generate`,
+`encode`, `import`, `export`, text Sends, `receive`.
+
+## Superseded: deferred decision on the on-disk state format
 
 TS-CLI compatibility and the SDK-native state path are **mutually exclusive**,
 and the binding constraint is the *session* layer, not the vault layer. Real
