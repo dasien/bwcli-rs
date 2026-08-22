@@ -10,12 +10,14 @@ use crate::services::{
     auth::{errors::AuthError, session_manager::SessionManager},
     crypto,
     storage::{
-        AccountManager, JsonFileStorage, Storage, StorageKey, encrypt_user_key, format_session_key,
-        generate_session_key, make_protected_key, user_key_protected_storage_key,
+        AccountManager, JsonFileStorage, Storage, StorageKey,
     },
 };
 use anyhow::Result;
+use crate::services::sdk_session;
+use bitwarden_core::Client;
 use bitwarden_core::auth::JwtToken;
+use bitwarden_crypto::EncString;
 use bitwarden_crypto::{CryptoError, Kdf, MasterKey, SymmetricCryptoKey};
 use secrecy::{ExposeSecret, Secret};
 use std::sync::Arc;
@@ -34,11 +36,18 @@ pub struct AuthService {
     api_client: Arc<BitwardenApiClient>,
     session_manager: Arc<SessionManager>,
     account_manager: Arc<AccountManager>,
+    /// Needed because the session lifecycle now lives in the SDK
+    /// (`bitwarden-unlock`) rather than in this service.
+    sdk: Arc<Client>,
 }
 
 impl AuthService {
     /// Create new authentication service
-    pub fn new(storage: Arc<Mutex<JsonFileStorage>>, api_client: Arc<BitwardenApiClient>) -> Self {
+    pub fn new(
+        storage: Arc<Mutex<JsonFileStorage>>,
+        api_client: Arc<BitwardenApiClient>,
+        sdk: Arc<Client>,
+    ) -> Self {
         let session_manager = Arc::new(SessionManager::new(Arc::clone(&storage)));
         let account_manager = Arc::new(AccountManager::new(Arc::clone(&storage)));
 
@@ -47,6 +56,7 @@ impl AuthService {
             api_client,
             session_manager,
             account_manager,
+            sdk,
         }
     }
 
@@ -113,29 +123,25 @@ impl AuthService {
         // Step 6: Identify the user from the token's claims (no extra round trip)
         let (user_id, email) = Self::identify_user(&login_response.access_token)?;
 
-        // Step 7: Generate session key using SDK
-        debug!("Generating session key");
-        let session_key = generate_session_key();
-        let session_key_str = format_session_key(&session_key);
-
-        // Step 8: Store user key in protected storage (if available)
-        if let Some(ref uk) = user_key {
-            debug!("Storing user key in protected storage");
-            let encrypted_protected_key = encrypt_user_key(uk, &session_key).map_err(|e| {
-                AuthError::CryptoOperationFailed {
-                    message: format!("Failed to encrypt user key for protected storage: {}", e),
-                }
-            })?;
-
-            let protected_key = make_protected_key(&user_key_protected_storage_key(&user_id));
-
-            let mut storage = self.storage.lock().await;
-            storage
-                .set(&protected_key, &encrypted_protected_key)
-                .await?;
-            storage.flush().await?;
-            drop(storage);
-        }
+        // Step 7: Hand the session to the SDK.
+        //
+        // `generate_session_key` seals the user key out of the key store, so the
+        // key store has to be populated first. The SDK persists both the sealed
+        // key and the account cryptographic state, which is what a later
+        // `unlock` reads back.
+        let session_key_str = match (&user_key, login_response.private_key.as_deref()) {
+            (Some(uk), Some(private_key)) => {
+                debug!("Initializing vault crypto and minting a session key");
+                self.establish_session(&user_id, &email, &kdf_config, private_key, uk)
+                    .await?
+            }
+            _ => {
+                // No user key or no account keys: nothing to unlock with. The
+                // user runs `bw unlock` to get a session.
+                warn!("Login response carried no user key; vault stays locked");
+                String::new()
+            }
+        };
 
         // Step 9: Persist authentication state
         debug!("Persisting authentication state");
@@ -200,9 +206,11 @@ impl AuthService {
         // Identify the user from the token's claims
         let (user_id, email) = Self::identify_user(&login_response.access_token)?;
 
-        // Generate session key using SDK
-        let session_key = generate_session_key();
-        let session_key_str = format_session_key(&session_key);
+        // API-key login returns no user key, so there is nothing to seal and no
+        // session to mint. The user runs `bw unlock` with their master password
+        // to get one. Previously a session key was handed out here that could
+        // not unlock anything.
+        let session_key_str = String::new();
 
         // Note: API key login doesn't have user key or KDF config
         // Persist minimal authentication state
@@ -280,27 +288,19 @@ impl AuthService {
             .await
             .map_err(|_| AuthError::InvalidPassword)?;
 
-        // Generate new session key using SDK
-        debug!("Generating session key");
-        let session_key = generate_session_key();
-        let session_key_str = format_session_key(&session_key);
+        // Hand the session to the SDK, exactly as login does.
+        let private_key = {
+            let storage = self.storage.lock().await;
+            storage
+                .get::<String>(&StorageKey::UserPrivateKey.format(Some(&user_id)))?
+                .ok_or_else(|| AuthError::CryptoOperationFailed {
+                    message: "Account private key not found. Run 'bw login' again.".to_string(),
+                })?
+        };
 
-        // Store user key in protected storage
-        debug!("Storing user key in protected storage");
-        let encrypted_protected_key = encrypt_user_key(&user_key, &session_key).map_err(|e| {
-            AuthError::CryptoOperationFailed {
-                message: format!("Failed to encrypt user key for protected storage: {}", e),
-            }
-        })?;
-
-        let protected_key = make_protected_key(&user_key_protected_storage_key(&user_id));
-
-        let mut storage = self.storage.lock().await;
-        storage
-            .set(&protected_key, &encrypted_protected_key)
+        let session_key_str = self
+            .establish_session(&user_id, &email, &kdf_config, &private_key, &user_key)
             .await?;
-        storage.flush().await?;
-        drop(storage);
 
         info!("Vault unlock successful");
 
@@ -313,9 +313,9 @@ impl AuthService {
     pub async fn lock(&self) -> Result<(), AuthError> {
         info!("Locking vault");
 
-        // Get active user ID
-        let user_id = self
-            .account_manager
+        // Presence of an active account is still a precondition, but the id
+        // itself is no longer needed: the sealed key lives in SDK state.
+        self.account_manager
             .get_active_user_id()
             .await?
             .ok_or(AuthError::NotLoggedIn)?;
@@ -326,15 +326,11 @@ impl AuthService {
             return Err(AuthError::NotLoggedIn);
         }
 
-        // Clear protected user key from storage
-        let protected_key = make_protected_key(&user_key_protected_storage_key(&user_id));
-        let mut storage = self.storage.lock().await;
-        storage.remove(&protected_key).await?;
-        storage.flush().await?;
-        drop(storage);
-
-        // Clear session key hint (actual BW_SESSION is user's responsibility)
-        self.session_manager.clear_session_key().await?;
+        // Invalidating the sealed user key is what actually locks the vault;
+        // any outstanding BW_SESSION stops working.
+        sdk_session::invalidate_session(&self.sdk)
+            .await
+            .map_err(|e| AuthError::Other(e.to_string()))?;
 
         info!("Vault locked");
         Ok(())
@@ -368,18 +364,18 @@ impl AuthService {
             )
             .await?;
 
-        // Clear protected user key
-        let protected_key = make_protected_key(&user_key_protected_storage_key(&user_id));
-        storage.remove(&protected_key).await?;
-
         storage.flush().await?;
         drop(storage);
 
+        // The sealed user key lives in SDK state now, so invalidating the
+        // session is what actually revokes vault access. Best-effort: logging
+        // out must still clear local tokens even if this fails.
+        if let Err(e) = sdk_session::invalidate_session(&self.sdk).await {
+            debug!("Could not invalidate the session key during logout: {e:#}");
+        }
+
         // Clear active account (but preserve in accounts registry)
         self.account_manager.clear_active_account().await?;
-
-        // Clear session key hint
-        self.session_manager.clear_session_key().await?;
 
         info!("Logout complete");
         Ok(())
@@ -530,6 +526,62 @@ impl AuthService {
                     message: format!("Authentication failed: {}", e),
                 }
             })
+    }
+
+    /// Initialize vault crypto from a decrypted user key, persist what a later
+    /// unlock needs, and mint the `BW_SESSION` value.
+    async fn establish_session(
+        &self,
+        user_id: &str,
+        email: &str,
+        kdf_config: &KdfConfig,
+        private_key: &str,
+        user_key: &SymmetricCryptoKey,
+    ) -> Result<String, AuthError> {
+        let kdf: Kdf = kdf_config
+            .try_into()
+            .map_err(|e: anyhow::Error| AuthError::KdfError {
+                message: e.to_string(),
+            })?;
+
+        let private_key: EncString =
+            private_key
+                .parse()
+                .map_err(|_| AuthError::CryptoOperationFailed {
+                    message: "Account private key is malformed".to_string(),
+                })?;
+
+        // `{:#}` keeps the whole context chain; plain Display would report only
+        // the outermost message and hide the actual cause.
+        let to_auth_err = |e: anyhow::Error| AuthError::CryptoOperationFailed {
+            message: format!("{e:#}"),
+        };
+
+        sdk_session::initialize_crypto(
+            &self.sdk,
+            user_id,
+            email,
+            kdf,
+            private_key.clone(),
+            user_key,
+        )
+        .await
+        .map_err(to_auth_err)?;
+
+        sdk_session::persist_account_state(
+            &self.sdk,
+            user_id,
+            email,
+            self.api_client.environment().api_url(),
+            self.api_client.environment().identity_url(),
+            private_key,
+        )
+        .await
+        .map_err(to_auth_err)?;
+
+        sdk_session::mint_session_key(&self.sdk)
+            .await
+            .map_err(to_auth_err)
     }
 
     /// Identify the user from the access token's own claims.

@@ -39,6 +39,7 @@ bitwarden-exporters = { path = "../sdk-internal/crates/bitwarden-exporters", ver
 bitwarden-send = { path = "../sdk-internal/crates/bitwarden-send", version = "=3.0.0" }
 bitwarden-state = { path = "../sdk-internal/crates/bitwarden-state", version = "=3.0.0" }
 bitwarden-pm = { path = "../sdk-internal/crates/bitwarden-pm", version = "=3.0.0", features = ["cli"] }
+bitwarden-unlock = { path = "../sdk-internal/crates/bitwarden-unlock", version = "=3.0.0", features = ["cli"] }
 bitwarden-encoding = { path = "../sdk-internal/crates/bitwarden-encoding", version = "=3.0.0" }
 bitwarden-error = { path = "../sdk-internal/crates/bitwarden-error", version = "=3.0.0" }
 

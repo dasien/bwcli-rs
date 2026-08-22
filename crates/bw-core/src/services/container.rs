@@ -1,7 +1,6 @@
 use super::{
     api::{BitwardenApiClient, Environment, StoredAccessToken},
     create_sdk_client_with_state,
-    key_service::KeyService,
     send_repository::JsonSendRepository,
     sdk::Client,
     storage::{AccountManager, JsonFileStorage, StoragePath},
@@ -128,14 +127,7 @@ impl ServiceContainer {
     /// run before any command performs vault crypto. Safe to call for commands
     /// that don't need crypto — it only touches storage and the key store.
     pub async fn unlock_sdk(&self, session_str: &str) -> Result<()> {
-        let account_manager = Arc::new(AccountManager::new(self.storage()));
-        let key_service = KeyService::new(self.storage(), account_manager);
-
-        key_service
-            .initialize_client_crypto(&self.sdk, session_str)
-            .await?;
-
-        Ok(())
+        crate::services::sdk_session::unlock_with_session(&self.sdk, session_str).await
     }
 }
 

@@ -4,6 +4,7 @@ use crate::commands::auth::{LockCommand, LogoutCommand, UnlockCommand, input};
 use crate::output::Response;
 use anyhow::Result;
 use bw_core::services::auth::AuthService;
+use std::sync::Arc;
 
 /// Execute vault unlock
 pub async fn execute_unlock(
@@ -12,7 +13,7 @@ pub async fn execute_unlock(
     ctx: &AppContext,
 ) -> Result<Response> {
     // Use services from context
-    let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
+    let auth_service = AuthService::new(ctx.storage(), ctx.api_client(), Arc::new(ctx.sdk().clone()));
 
     // Gather password
     let password = input::require_password(cmd.password, global_args, None)?;
@@ -37,7 +38,7 @@ pub async fn execute_lock(
     ctx: &AppContext,
 ) -> Result<Response> {
     // Use services from context
-    let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
+    let auth_service = AuthService::new(ctx.storage(), ctx.api_client(), Arc::new(ctx.sdk().clone()));
 
     // Execute lock
     auth_service.lock().await?;
@@ -52,7 +53,7 @@ pub async fn execute_logout(
     ctx: &AppContext,
 ) -> Result<Response> {
     // Use services from context
-    let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
+    let auth_service = AuthService::new(ctx.storage(), ctx.api_client(), Arc::new(ctx.sdk().clone()));
 
     // Execute logout
     auth_service.logout().await?;

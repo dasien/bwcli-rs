@@ -136,14 +136,39 @@ async fn main() -> ExitCode {
         }
     };
 
-    // The SDK client starts each process with an empty key store. If a session
-    // key is available, load the user key into it so vault commands can perform
-    // crypto. Failure is not fatal here: commands that don't need crypto (config,
-    // status, generate) must still work with a stale or absent session.
-    if let Some(session) = cli.global_args.session.as_deref() {
-        if !session.is_empty() {
-            if let Err(e) = ctx.container().unlock_sdk(session).await {
-                tracing::debug!("Could not initialize SDK crypto from session: {:#}", e);
+    // The SDK client starts each process with an empty key store, so a session
+    // key has to be loaded before any command performs vault crypto.
+    //
+    // A failure here must be fatal for commands that need crypto. It used to be
+    // logged at debug and ignored, which meant a stale session produced 11
+    // items with empty names instead of an error — decryption against an empty
+    // key store yields blanks rather than failing.
+    if needs_unlocked_vault(&cli.command) {
+        match cli.global_args.session.as_deref() {
+            Some(session) if !session.is_empty() => {
+                if let Err(e) = ctx.container().unlock_sdk(session).await {
+                    if !cli.global_args.quiet {
+                        eprintln!("Error: {:#}", e);
+                        eprintln!("Run 'bw unlock' to get a new session key.");
+                    }
+                    return if cli.global_args.cleanexit {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    };
+                }
+            }
+            _ => {
+                if !cli.global_args.quiet {
+                    eprintln!(
+                        "Error: Vault is locked. Run 'bw unlock' and set BW_SESSION."
+                    );
+                }
+                return if cli.global_args.cleanexit {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                };
             }
         }
     }
@@ -169,6 +194,24 @@ async fn main() -> ExitCode {
     };
 
     exit_code
+}
+
+/// Whether a command reads or writes vault data and therefore needs the key
+/// store populated.
+///
+/// Listed explicitly rather than inferred so that adding a command forces a
+/// deliberate choice. `receive` is absent on purpose: receiving a Send is
+/// anonymous and must work while locked, or logged out entirely.
+fn needs_unlocked_vault(command: &Commands) -> bool {
+    use Commands::*;
+
+    match command {
+        List(_) | Get(_) | Create(_) | Edit(_) | Delete(_) | Restore(_) | Move(_) | Sync(_)
+        | Import(_) | Export(_) | Send(_) | Confirm(_) => true,
+
+        Login(_) | Logout(_) | Lock(_) | Unlock(_) | Status(_) | Config(_) | Generate(_)
+        | Encode(_) | Decrypt(_) | Receive(_) => false,
+    }
 }
 
 async fn execute_command(

@@ -38,6 +38,8 @@ fn test_jwt(sub: &str, email: &str) -> String {
 
 /// Test credentials - these are only used in tests, not real credentials
 const TEST_EMAIL: &str = "test@example.com";
+/// Must be a real UUID: the SDK parses it into a `UserId`.
+const TEST_USER_ID: &str = "11111111-1111-4111-8111-111111111111";
 const TEST_PASSWORD: &str = "test_password";
 const TEST_KDF_ITERATIONS: u32 = 600000;
 
@@ -45,14 +47,23 @@ const TEST_KDF_ITERATIONS: u32 = 600000;
 ///
 /// This creates a real encrypted user key that can be decrypted with the
 /// given password/email/KDF combination.
-fn generate_test_encrypted_user_key(password: &str, email: &str, iterations: u32) -> String {
+/// `(encrypted_user_key, wrapped_private_key)` for a test account.
+///
+/// Login now initializes the SDK key store and mints the session key through
+/// `bitwarden-unlock`, which needs the account's wrapped private key — so mocks
+/// have to supply a real one, not just the user key.
+fn test_account_keys(password: &str, email: &str, iterations: u32) -> (String, String) {
     let kdf = Kdf::PBKDF2 {
         iterations: NonZeroU32::new(iterations).unwrap(),
     };
     let master_key = MasterKey::derive(password, email, &kdf).expect("Failed to derive master key");
-    let (_user_key, encrypted_user_key) =
+    let (user_key, encrypted_user_key) =
         master_key.make_user_key().expect("Failed to make user key");
-    encrypted_user_key.to_string()
+
+    // `make_user_key` already hands back a `UserKey`.
+    let key_pair = user_key.make_key_pair().expect("Failed to make key pair");
+
+    (encrypted_user_key.to_string(), key_pair.private.to_string())
 }
 
 /// Helper to create test auth service with temp storage and mock API
@@ -75,13 +86,68 @@ async fn setup_test_auth_service(
             .expect("Failed to create API client"),
     );
 
-    let auth_service = AuthService::new(Arc::clone(&storage), api_client);
+    // Login and unlock now mint the session through the SDK, so the service
+    // needs a client with state to write the sealed key into.
+    let temp_state = temp_dir.path().to_path_buf();
+    let sdk = Arc::new(
+        bw_core::services::create_sdk_client_with_state(
+            Some(api_url.clone()),
+            Some(api_url.clone()),
+            Arc::new(bw_core::services::api::StoredAccessToken::new(Arc::clone(&api_client))),
+            temp_state,
+        )
+        .await
+        .unwrap(),
+    );
+
+    let auth_service = AuthService::new(Arc::clone(&storage), api_client, sdk);
 
     (auth_service, storage, temp_dir)
 }
 
+/// A second `AuthService` over the same state directory.
+///
+/// Each CLI invocation gets a fresh client, so login and unlock never share
+/// one. Reusing a single client would try to initialize crypto twice and fail
+/// with "Cryptography Initialization error" — an artifact of the test, not of
+/// the code under test.
+async fn another_invocation(
+    dir: &std::path::Path,
+    api_url: String,
+) -> (AuthService, Arc<Mutex<JsonFileStorage>>) {
+    let storage = Arc::new(Mutex::new(
+        JsonFileStorage::new(Some(dir.to_path_buf())).expect("Failed to create test storage"),
+    ));
+
+    let environment = Environment::from_base_url(&api_url).expect("Failed to create environment");
+    let api_client = Arc::new(
+        BitwardenApiClient::new(environment, Arc::clone(&storage), None)
+            .expect("Failed to create API client"),
+    );
+
+    let sdk = Arc::new(
+        bw_core::services::create_sdk_client_with_state(
+            Some(api_url.clone()),
+            Some(api_url),
+            Arc::new(bw_core::services::api::StoredAccessToken::new(Arc::clone(&api_client))),
+            dir.to_path_buf(),
+        )
+        .await
+        .unwrap(),
+    );
+
+    (
+        AuthService::new(Arc::clone(&storage), api_client, sdk),
+        storage,
+    )
+}
+
 /// Setup standard mocks for password login tests
-async fn setup_login_mocks(mock_server: &MockServer, encrypted_user_key: &str) {
+async fn setup_login_mocks(
+    mock_server: &MockServer,
+    encrypted_user_key: &str,
+    private_key: &str,
+) {
     // Mock prelogin response (KDF config)
     Mock::given(method("POST"))
         .and(path("/identity/accounts/prelogin"))
@@ -97,11 +163,12 @@ async fn setup_login_mocks(mock_server: &MockServer, encrypted_user_key: &str) {
         .and(path("/identity/connect/token"))
         .and(body_string_contains("grant_type=password"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token": test_jwt("user_id_123", TEST_EMAIL),
+            "access_token": test_jwt(TEST_USER_ID, TEST_EMAIL),
             "expires_in": 3600,
             "token_type": "Bearer",
             "refresh_token": "test_refresh_token",
             "Key": encrypted_user_key,
+            "PrivateKey": private_key,
             "Kdf": 0,
             "KdfIterations": TEST_KDF_ITERATIONS,
             "ResetMasterPassword": false,
@@ -114,12 +181,14 @@ async fn setup_login_mocks(mock_server: &MockServer, encrypted_user_key: &str) {
 #[tokio::test]
 async fn test_login_with_password_success() {
     // Generate a valid encrypted user key for our test credentials
-    let encrypted_user_key =
-        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    // One generation: `Key` and `PrivateKey` must be wrapped by the *same*
+    // user key or crypto initialization fails.
+    let (encrypted_user_key, private_key) =
+        test_account_keys(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     // Setup mock server
     let mock_server = MockServer::start().await;
-    setup_login_mocks(&mock_server, &encrypted_user_key).await;
+    setup_login_mocks(&mock_server, &encrypted_user_key, &private_key).await;
 
     // Create test service
     let (auth_service, storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
@@ -138,19 +207,19 @@ async fn test_login_with_password_success() {
     assert!(result.is_ok(), "Login should succeed: {:?}", result.err());
     let login_result = result.unwrap();
     assert_eq!(login_result.email, TEST_EMAIL);
-    assert_eq!(login_result.user_id, "user_id_123");
+    assert_eq!(login_result.user_id, TEST_USER_ID);
     assert!(!login_result.session_key.is_empty());
 
     // Verify storage persistence - check namespaced keys
     let storage = storage.lock().await;
 
     // Check access token is stored with namespaced key
-    let access_token_key = StorageKey::UserAccessToken.format(Some("user_id_123"));
+    let access_token_key = StorageKey::UserAccessToken.format(Some(TEST_USER_ID));
     let access_token: Option<String> = storage.get(&access_token_key).unwrap();
     assert!(access_token.is_some(), "Access token should be stored");
 
     // Check KDF config is stored with namespaced key
-    let kdf_key = StorageKey::UserKdfConfig.format(Some("user_id_123"));
+    let kdf_key = StorageKey::UserKdfConfig.format(Some(TEST_USER_ID));
     let kdf_config: Option<serde_json::Value> = storage.get(&kdf_key).unwrap();
     assert!(kdf_config.is_some(), "KDF config should be stored");
 }
@@ -210,7 +279,7 @@ async fn test_login_with_api_key_success() {
         .and(path("/identity/connect/token"))
         .and(body_string_contains("grant_type=client_credentials"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token": test_jwt("api_user_id", "api@example.com"),
+            "access_token": test_jwt(TEST_USER_ID, "api@example.com"),
             "expires_in": 3600,
             "token_type": "Bearer",
             "refresh_token": "api_key_refresh_token",
@@ -239,18 +308,26 @@ async fn test_login_with_api_key_success() {
     );
     let login_result = result.unwrap();
     assert_eq!(login_result.email, "api@example.com");
-    assert_eq!(login_result.user_id, "api_user_id");
-    assert!(!login_result.session_key.is_empty());
+    assert_eq!(login_result.user_id, TEST_USER_ID);
+    // API-key login returns no user key, so there is nothing to seal and no
+    // session to mint. It previously handed out a session key that could not
+    // unlock anything.
+    assert!(
+        login_result.session_key.is_empty(),
+        "api-key login should not mint a session key"
+    );
 }
 
 #[tokio::test]
 async fn test_unlock_success() {
     // Generate a valid encrypted user key for our test credentials
-    let encrypted_user_key =
-        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    // One generation: `Key` and `PrivateKey` must be wrapped by the *same*
+    // user key or crypto initialization fails.
+    let (encrypted_user_key, private_key) =
+        test_account_keys(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     let mock_server = MockServer::start().await;
-    setup_login_mocks(&mock_server, &encrypted_user_key).await;
+    setup_login_mocks(&mock_server, &encrypted_user_key, &private_key).await;
 
     let (auth_service, _storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
@@ -265,8 +342,11 @@ async fn test_unlock_success() {
         login_result.err()
     );
 
-    // Now test unlock with the same password
-    let unlock_result = auth_service.unlock(password).await;
+    // Unlock happens in a separate CLI invocation, so use a fresh service over
+    // the same state directory.
+    let (unlock_service, _storage2) =
+        another_invocation(_temp_dir.path(), mock_server.uri()).await;
+    let unlock_result = unlock_service.unlock(password).await;
 
     // Verify unlock success
     assert!(
@@ -301,11 +381,13 @@ async fn test_unlock_not_logged_in() {
 #[tokio::test]
 async fn test_unlock_wrong_password() {
     // Generate encrypted user key with the correct password
-    let encrypted_user_key =
-        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    // One generation: `Key` and `PrivateKey` must be wrapped by the *same*
+    // user key or crypto initialization fails.
+    let (encrypted_user_key, private_key) =
+        test_account_keys(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     let mock_server = MockServer::start().await;
-    setup_login_mocks(&mock_server, &encrypted_user_key).await;
+    setup_login_mocks(&mock_server, &encrypted_user_key, &private_key).await;
 
     let (auth_service, _storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
@@ -342,11 +424,13 @@ async fn test_unlock_wrong_password() {
 #[tokio::test]
 async fn test_lock() {
     // Generate a valid encrypted user key for our test credentials
-    let encrypted_user_key =
-        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    // One generation: `Key` and `PrivateKey` must be wrapped by the *same*
+    // user key or crypto initialization fails.
+    let (encrypted_user_key, private_key) =
+        test_account_keys(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     let mock_server = MockServer::start().await;
-    setup_login_mocks(&mock_server, &encrypted_user_key).await;
+    setup_login_mocks(&mock_server, &encrypted_user_key, &private_key).await;
 
     let (auth_service, _storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
@@ -373,11 +457,13 @@ async fn test_lock() {
 #[tokio::test]
 async fn test_logout_success() {
     // Generate a valid encrypted user key for our test credentials
-    let encrypted_user_key =
-        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    // One generation: `Key` and `PrivateKey` must be wrapped by the *same*
+    // user key or crypto initialization fails.
+    let (encrypted_user_key, private_key) =
+        test_account_keys(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     let mock_server = MockServer::start().await;
-    setup_login_mocks(&mock_server, &encrypted_user_key).await;
+    setup_login_mocks(&mock_server, &encrypted_user_key, &private_key).await;
 
     let (auth_service, storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
@@ -399,7 +485,7 @@ async fn test_logout_success() {
     // Verify data is stored
     {
         let storage = storage.lock().await;
-        let access_token_key = StorageKey::UserAccessToken.format(Some("user_id_123"));
+        let access_token_key = StorageKey::UserAccessToken.format(Some(TEST_USER_ID));
         let token: Option<String> = storage.get(&access_token_key).unwrap();
         assert!(token.is_some(), "Access token should be stored after login");
     }
@@ -415,7 +501,7 @@ async fn test_logout_success() {
     // Verify tokens are cleared (set to null)
     {
         let storage = storage.lock().await;
-        let access_token_key = StorageKey::UserAccessToken.format(Some("user_id_123"));
+        let access_token_key = StorageKey::UserAccessToken.format(Some(TEST_USER_ID));
         let token: Option<serde_json::Value> = storage.get(&access_token_key).unwrap();
         // Token should be null (not removed, set to null per TypeScript CLI behavior)
         assert!(
@@ -429,11 +515,13 @@ async fn test_logout_success() {
 #[tokio::test]
 async fn test_session_key_format() {
     // Generate a valid encrypted user key for our test credentials
-    let encrypted_user_key =
-        generate_test_encrypted_user_key(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
+    // One generation: `Key` and `PrivateKey` must be wrapped by the *same*
+    // user key or crypto initialization fails.
+    let (encrypted_user_key, private_key) =
+        test_account_keys(TEST_PASSWORD, TEST_EMAIL, TEST_KDF_ITERATIONS);
 
     let mock_server = MockServer::start().await;
-    setup_login_mocks(&mock_server, &encrypted_user_key).await;
+    setup_login_mocks(&mock_server, &encrypted_user_key, &private_key).await;
 
     let (auth_service, _storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
@@ -447,11 +535,16 @@ async fn test_session_key_format() {
         .await
         .expect("Login should succeed");
 
-    // Verify session key is valid base64 (should decode successfully)
-    use base64::Engine;
-    let decoded = base64::engine::general_purpose::STANDARD.decode(&result.session_key);
-    assert!(decoded.is_ok(), "Session key should be valid base64");
+    // The session key is now minted by `bitwarden-unlock`, so it is a
+    // SymmetricKeyEnvelope key rather than the old 64-byte enc+MAC blob.
+    // Assert the property that matters: BW_SESSION round-trips back into a
+    // usable SessionKey.
+    assert!(
+        !result.session_key.is_empty(),
+        "login should mint a session key"
+    );
 
-    // Session key should be 64 bytes (512 bits)
-    assert_eq!(decoded.unwrap().len(), 64, "Session key should be 64 bytes");
+    use std::str::FromStr;
+    bitwarden_unlock::SessionKey::from_str(&result.session_key)
+        .expect("BW_SESSION should parse back into a session key");
 }

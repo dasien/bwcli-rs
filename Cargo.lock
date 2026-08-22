@@ -1034,6 +1034,7 @@ dependencies = [
  "bitwarden-pm",
  "bitwarden-send",
  "bitwarden-state",
+ "bitwarden-unlock",
  "bitwarden-vault",
  "chrono",
  "csv",

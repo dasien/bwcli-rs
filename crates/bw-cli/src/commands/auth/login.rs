@@ -5,6 +5,7 @@ use crate::output::Response;
 use anyhow::Result;
 use bw_core::models::auth::TwoFactorMethod;
 use bw_core::services::auth::{AuthError, AuthService};
+use std::sync::Arc;
 
 /// Execute password-based login
 pub async fn execute_password_login(
@@ -13,7 +14,7 @@ pub async fn execute_password_login(
     ctx: &AppContext,
 ) -> Result<Response> {
     // Use services from context
-    let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
+    let auth_service = AuthService::new(ctx.storage(), ctx.api_client(), Arc::new(ctx.sdk().clone()));
 
     // Gather inputs (prompt if missing and interactive mode allowed)
     let email = input::require_string(cmd.email, global_args, "Email", prompts::prompt_email)?;
@@ -86,7 +87,7 @@ pub async fn execute_api_key_login(
     ctx: &AppContext,
 ) -> Result<Response> {
     // Use services from context
-    let auth_service = AuthService::new(ctx.storage(), ctx.api_client());
+    let auth_service = AuthService::new(ctx.storage(), ctx.api_client(), Arc::new(ctx.sdk().clone()));
 
     // Gather inputs
     let client_id = input::require_string(
@@ -103,18 +104,15 @@ pub async fn execute_api_key_login(
     )?;
 
     // Execute login
-    let result = auth_service
+    auth_service
         .login_with_api_key(&client_id, client_secret)
         .await?;
 
-    // Format output with session key
-    Ok(Response::success(format!(
+    // API-key login returns no user key, so there is no session to hand out.
+    // Printing an empty `export BW_SESSION=""` would be actively misleading.
+    Ok(Response::success(
         "You are logged in!\n\n\
-         To unlock your vault, set your session key to the BW_SESSION environment variable. ex:\n\
-         $ export BW_SESSION=\"{}\"\n\
-         > $env:BW_SESSION=\"{}\"\n\n\
-         You can also pass the session key to any command with the --session option. ex:\n\
-         $ bw list items --session {}",
-        result.session_key, result.session_key, result.session_key
-    )))
+         Your vault is still locked. Run 'bw unlock' to get a session key."
+            .to_string(),
+    ))
 }
