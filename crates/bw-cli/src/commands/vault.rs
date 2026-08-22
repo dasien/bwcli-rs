@@ -346,7 +346,6 @@ pub(crate) fn create_vault_service(ctx: &AppContext) -> VaultService {
     let account_manager = Arc::new(AccountManager::new(ctx.storage()));
 
     VaultService::new(
-        ctx.api_client(),
         ctx.storage(),
         Arc::new(ctx.sdk().clone()),
         account_manager,
@@ -360,7 +359,6 @@ pub(crate) fn create_write_service(ctx: &AppContext, no_interaction: bool) -> Wr
 
     WriteService::new(
         sdk,
-        ctx.api_client(),
         cipher_service,
         Arc::new(ValidationService::new()),
         Arc::new(ConfirmationService::new(no_interaction)),

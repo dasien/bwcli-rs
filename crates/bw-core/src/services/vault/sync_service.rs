@@ -5,10 +5,8 @@
 
 use super::errors::VaultError;
 use crate::models::vault::parse_sync_response;
-use crate::services::api::{ApiClient, BitwardenApiClient};
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
 use bitwarden_core::Client;
-use bitwarden_state::repository::Repository;
 use bitwarden_vault::{Cipher, Folder};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,22 +14,13 @@ use tokio::sync::Mutex;
 
 /// Service for vault synchronization operations
 pub struct SyncService {
-    api_client: Arc<BitwardenApiClient>,
     storage: Arc<Mutex<JsonFileStorage>>,
     sdk: Arc<Client>,
 }
 
 impl SyncService {
-    pub fn new(
-        api_client: Arc<BitwardenApiClient>,
-        storage: Arc<Mutex<JsonFileStorage>>,
-        sdk: Arc<Client>,
-    ) -> Self {
-        Self {
-            api_client,
-            storage,
-            sdk,
-        }
+    pub fn new(storage: Arc<Mutex<JsonFileStorage>>, sdk: Arc<Client>) -> Self {
+        Self { storage, sdk }
     }
 
     /// Generated API clients, authenticated via the SDK's token handler.
@@ -50,8 +39,9 @@ impl SyncService {
     /// # Returns
     /// Last sync timestamp (ISO 8601 format)
     pub async fn sync(&self, force: bool) -> Result<String, VaultError> {
-        // Check authentication
-        if !self.api_client.is_authenticated().await {
+        // Authentication now means "the SDK has tokens"; an expired access token
+        // still counts, because its token handler renews transparently.
+        if !crate::services::sdk_session::is_authenticated(&self.sdk).await {
             return Err(VaultError::NotAuthenticated);
         }
 

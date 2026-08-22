@@ -6,7 +6,6 @@
 //! code at runtime — nothing populated the SDK key store at all.
 
 use bitwarden_core::Client;
-use bitwarden_core::auth::ClientManagedTokens;
 use bitwarden_crypto::{Kdf, MasterKey, SymmetricCryptoKey};
 use bitwarden_vault::{FolderView, VaultClientExt};
 use bw_core::services::create_sdk_client_with_state;
@@ -20,21 +19,10 @@ use std::sync::Arc;
 const TEST_USER_ID: &str = "11111111-1111-4111-8111-111111111111";
 const TEST_EMAIL: &str = "test@example.com";
 
-/// No token needed: nothing here talks to a server.
-#[derive(Debug)]
-struct NoTokens;
-
-#[async_trait::async_trait]
-impl ClientManagedTokens for NoTokens {
-    async fn get_access_token(&self) -> Option<String> {
-        None
-    }
-}
-
 /// A client over `dir`. Calling this twice models two CLI invocations sharing
 /// one state directory, which is exactly how login-then-unlock behaves.
 async fn client_in(dir: &Path) -> Client {
-    create_sdk_client_with_state(None, None, Arc::new(NoTokens), dir.to_path_buf())
+    create_sdk_client_with_state(None, None, dir.to_path_buf())
         .await
         .expect("client with state")
 }

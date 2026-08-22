@@ -15,7 +15,6 @@
 use bw_core::models::vault::{Cipher, CipherType, CipherView, Folder};
 use bitwarden_vault::{CipherRepromptType, LoginView};
 use chrono::Utc;
-use bw_core::services::api::{BitwardenApiClient, Environment};
 use bw_core::services::create_sdk_client;
 use bw_core::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
 use bw_core::services::vault::{
@@ -83,7 +82,6 @@ fn create_test_cipher_view() -> CipherView {
 /// `TempDir`, which must outlive the state database.
 async fn setup_test_environment() -> (
     Arc<bitwarden_core::Client>,
-    Arc<BitwardenApiClient>,
     Arc<Mutex<JsonFileStorage>>,
     Arc<CipherService>,
     Arc<ValidationService>,
@@ -152,15 +150,10 @@ async fn setup_test_environment() -> (
     // Create SDK client
     let sdk_client = Arc::new(create_sdk_client(None, None).unwrap());
 
-    // Create API client (Note: This will fail on actual API calls without a real server)
-    let environment = Environment::default_cloud();
-    let api_client = Arc::new(BitwardenApiClient::new(environment, storage.clone(), None).unwrap());
-
     let cipher_service = Arc::new(CipherService::new(Arc::clone(&sdk_client)));
 
     (
         sdk_client,
-        api_client,
         storage,
         cipher_service,
         Arc::new(ValidationService::new()),
@@ -177,7 +170,6 @@ async fn setup_test_environment() -> (
 async fn test_create_cipher_rejects_invalid_input() {
     let (
         sdk,
-        api_client,
         _storage,
         cipher_service,
         validation_service,
@@ -187,7 +179,6 @@ async fn test_create_cipher_rejects_invalid_input() {
 
     let write_service = WriteService::new(
         sdk,
-        api_client,
         cipher_service,
         validation_service,
         confirmation_service,
@@ -225,7 +216,6 @@ async fn test_create_cipher_rejects_invalid_input() {
 async fn test_create_cipher_rejects_field_too_long() {
     let (
         sdk,
-        api_client,
         _storage,
         cipher_service,
         validation_service,
@@ -235,7 +225,6 @@ async fn test_create_cipher_rejects_field_too_long() {
 
     let write_service = WriteService::new(
         sdk,
-        api_client,
         cipher_service,
         validation_service,
         confirmation_service,
@@ -269,7 +258,6 @@ async fn test_create_cipher_rejects_field_too_long() {
 async fn test_create_folder_rejects_empty_name() {
     let (
         sdk,
-        api_client,
         _storage,
         cipher_service,
         validation_service,
@@ -279,7 +267,6 @@ async fn test_create_folder_rejects_empty_name() {
 
     let write_service = WriteService::new(
         sdk,
-        api_client,
         cipher_service,
         validation_service,
         confirmation_service,
@@ -299,7 +286,6 @@ async fn test_create_folder_rejects_empty_name() {
 async fn test_create_folder_rejects_name_too_long() {
     let (
         sdk,
-        api_client,
         _storage,
         cipher_service,
         validation_service,
@@ -309,7 +295,6 @@ async fn test_create_folder_rejects_name_too_long() {
 
     let write_service = WriteService::new(
         sdk,
-        api_client,
         cipher_service,
         validation_service,
         confirmation_service,
@@ -329,7 +314,6 @@ async fn test_create_folder_rejects_name_too_long() {
 async fn test_update_folder_rejects_empty_name() {
     let (
         sdk,
-        api_client,
         _storage,
         cipher_service,
         validation_service,
@@ -339,7 +323,6 @@ async fn test_update_folder_rejects_empty_name() {
 
     let write_service = WriteService::new(
         sdk,
-        api_client,
         cipher_service,
         validation_service,
         confirmation_service,
@@ -366,7 +349,6 @@ async fn test_update_folder_rejects_empty_name() {
 async fn test_create_login_without_login_data_fails() {
     let (
         sdk,
-        api_client,
         _storage,
         cipher_service,
         validation_service,
@@ -376,7 +358,6 @@ async fn test_create_login_without_login_data_fails() {
 
     let write_service = WriteService::new(
         sdk,
-        api_client,
         cipher_service,
         validation_service,
         confirmation_service,
@@ -399,7 +380,6 @@ async fn test_create_login_without_login_data_fails() {
 async fn test_create_secure_note_without_secure_note_data_fails() {
     let (
         sdk,
-        api_client,
         _storage,
         cipher_service,
         validation_service,
@@ -409,7 +389,6 @@ async fn test_create_secure_note_without_secure_note_data_fails() {
 
     let write_service = WriteService::new(
         sdk,
-        api_client,
         cipher_service,
         validation_service,
         confirmation_service,
@@ -433,7 +412,6 @@ async fn test_create_secure_note_without_secure_note_data_fails() {
 async fn test_create_card_without_card_data_fails() {
     let (
         sdk,
-        api_client,
         _storage,
         cipher_service,
         validation_service,
@@ -443,7 +421,6 @@ async fn test_create_card_without_card_data_fails() {
 
     let write_service = WriteService::new(
         sdk,
-        api_client,
         cipher_service,
         validation_service,
         confirmation_service,
@@ -467,7 +444,6 @@ async fn test_create_card_without_card_data_fails() {
 async fn test_create_identity_without_identity_data_fails() {
     let (
         sdk,
-        api_client,
         _storage,
         cipher_service,
         validation_service,
@@ -477,7 +453,6 @@ async fn test_create_identity_without_identity_data_fails() {
 
     let write_service = WriteService::new(
         sdk,
-        api_client,
         cipher_service,
         validation_service,
         confirmation_service,

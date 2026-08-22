@@ -1,5 +1,5 @@
 use super::{
-    api::{BitwardenApiClient, Environment, StoredAccessToken},
+    api::{BitwardenApiClient, Environment},
     create_sdk_client_with_state,
     send_repository::JsonSendRepository,
     sdk::Client,
@@ -61,23 +61,14 @@ impl ServiceContainer {
             }
         };
 
-        // Initialize API client (shares the same storage instance)
-        let api_client = Arc::new(BitwardenApiClient::new(
-            environment,
-            Arc::clone(&storage),
-            timeout_seconds,
-        )?);
+        // Login, prelogin and the identity endpoints only; unauthenticated.
+        let api_client = Arc::new(BitwardenApiClient::new(environment, timeout_seconds)?);
 
-        // Give the SDK client our access token so its generated API clients are
-        // authenticated, and so an expired token gets refreshed (the SDK's
-        // client-managed handler attaches but never renews).
-        let sdk = create_sdk_client_with_state(
-            api_url.clone(),
-            identity_url.clone(),
-            Arc::new(StoredAccessToken::new(Arc::clone(&api_client))),
-            appdata_dir,
-        )
-        .await?;
+        // The SDK owns authentication: its token handler reads and renews the
+        // tokens persisted in the same state database.
+        let sdk =
+            create_sdk_client_with_state(api_url.clone(), identity_url.clone(), appdata_dir)
+                .await?;
 
         // Sends still read and write the legacy JSON store: nothing populates the
         // SQLite `Send` table yet, because sync writes to data.json. Registering

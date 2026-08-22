@@ -3,13 +3,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-/// Abstract API client interface for Bitwarden server communication
+/// Abstract API client interface for the endpoints the SDK does not cover.
 ///
-/// Provides methods for HTTP operations with and without authentication.
+/// Unauthenticated only — see [`super::BitwardenApiClient`] for why.
 /// Implementations handle:
 /// - Request serialization and response deserialization
-/// - Bearer token injection for authenticated requests
-/// - Automatic token refresh on 401 responses
 /// - Error mapping to typed error enums
 #[async_trait]
 pub trait ApiClient: Send + Sync {
@@ -29,25 +27,6 @@ pub trait ApiClient: Send + Sync {
     where
         T: for<'de> Deserialize<'de>;
 
-    /// Make an authenticated GET request
-    ///
-    /// Automatically includes Bearer token in Authorization header.
-    /// On 401 response, attempts token refresh and retries request.
-    ///
-    /// # Arguments
-    /// * `path` - API path relative to base URL
-    ///
-    /// # Returns
-    /// Deserialized response body of type T
-    ///
-    /// # Errors
-    /// - `ApiError::Authentication` if token missing or refresh fails
-    /// - `ApiError::Network` for connection failures
-    /// - `ApiError::Server` for 5xx responses
-    async fn get_with_auth<T>(&self, path: &str) -> Result<T>
-    where
-        T: for<'de> Deserialize<'de>;
-
     /// Make an unauthenticated POST request
     ///
     /// # Arguments
@@ -61,40 +40,8 @@ pub trait ApiClient: Send + Sync {
         T: Serialize + Send + Sync,
         R: for<'de> Deserialize<'de>;
 
-    /// Make an authenticated POST request
-    ///
-    /// Automatically includes Bearer token in Authorization header.
-    /// On 401 response, attempts token refresh and retries request.
-    async fn post_with_auth<T, R>(&self, path: &str, body: &T) -> Result<R>
-    where
-        T: Serialize + Send + Sync,
-        R: for<'de> Deserialize<'de>;
-
-    /// Make an authenticated PUT request
-    ///
-    /// Updates an existing resource with provided data.
-    async fn put_with_auth<T, R>(&self, path: &str, body: &T) -> Result<R>
-    where
-        T: Serialize + Send + Sync,
-        R: for<'de> Deserialize<'de>;
-
-    /// Make an authenticated PUT request with no response body
-    ///
-    /// For operations that don't return data (like soft delete).
-    async fn put_with_auth_no_response(&self, path: &str) -> Result<()>;
-
-    /// Make an authenticated DELETE request
-    ///
-    /// Deletes a resource. Returns empty result on success (204 No Content).
-    async fn delete_with_auth(&self, path: &str) -> Result<()>;
-
     /// Get the current environment URLs
     ///
     /// Returns URLs for all Bitwarden services (api, identity, web vault, etc.)
     fn environment(&self) -> &Environment;
-
-    /// Check if currently authenticated (has valid access token)
-    ///
-    /// Does not validate token with server, only checks local storage.
-    async fn is_authenticated(&self) -> bool;
 }

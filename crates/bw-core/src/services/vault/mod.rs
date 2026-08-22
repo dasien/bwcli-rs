@@ -6,7 +6,6 @@ use crate::models::vault::{
     Cipher, CipherListView, CipherView, Collection, CollectionView, Folder, FolderView,
     Organization, OrganizationId,
 };
-use crate::services::api::BitwardenApiClient;
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
 use bitwarden_core::Client;
 use bitwarden_vault::VaultClientExt;
@@ -55,16 +54,11 @@ pub struct VaultService {
 impl VaultService {
     /// Create new vault service
     pub fn new(
-        api_client: Arc<BitwardenApiClient>,
         storage: Arc<Mutex<JsonFileStorage>>,
         sdk_client: Arc<Client>,
         account_manager: Arc<AccountManager>,
     ) -> Self {
-        let sync_service = SyncService::new(
-            Arc::clone(&api_client),
-            Arc::clone(&storage),
-            Arc::clone(&sdk_client),
-        );
+        let sync_service = SyncService::new(Arc::clone(&storage), Arc::clone(&sdk_client));
         let cipher_service = CipherService::new(Arc::clone(&sdk_client));
         let search_service = SearchService::new();
         let totp_service = TotpService::new();

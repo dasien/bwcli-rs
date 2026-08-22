@@ -147,27 +147,6 @@ impl AccountManager {
 
         Ok(removed)
     }
-
-    /// Check if we have a logged-in session (active account with tokens)
-    ///
-    /// This checks:
-    /// 1. There is an active account ID
-    /// 2. The active account has an access token (not null)
-    pub async fn is_logged_in(&self) -> Result<bool> {
-        let user_id = match self.get_active_user_id().await? {
-            Some(id) => id,
-            None => return Ok(false),
-        };
-
-        let storage = self.storage.lock().await;
-        let token_key = StorageKey::UserAccessToken.format(Some(&user_id));
-
-        // Check for access token (may be null if logged out)
-        let token: Option<serde_json::Value> = storage.get(&token_key)?;
-
-        // Token is present and not null
-        Ok(matches!(token, Some(serde_json::Value::String(s)) if !s.is_empty()))
-    }
 }
 
 #[cfg(test)]
@@ -260,13 +239,5 @@ mod tests {
 
         let account = manager.get_account("user-1").await.unwrap();
         assert!(account.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_is_not_logged_in_without_active_account() {
-        let (manager, _temp) = create_test_account_manager().await;
-
-        let logged_in = manager.is_logged_in().await.unwrap();
-        assert!(!logged_in);
     }
 }

@@ -15,14 +15,17 @@
 
 use anyhow::{Context, Result};
 use bitwarden_core::Client;
+use bitwarden_core::client::login_method::UserLoginMethod;
 use bitwarden_core::client::persisted_state::{
-    ACCOUNT_CRYPTO_STATE, BASE_URLS, BaseUrls, USER_EMAIL, USER_ID,
+    ACCOUNT_CRYPTO_STATE, AUTHENTICATION_TOKENS, AuthenticationTokens, BASE_URLS, BaseUrls,
+    USER_EMAIL, USER_ID, USER_LOGIN_METHOD,
 };
 use bitwarden_core::key_management::account_cryptographic_state::WrappedAccountCryptographicState;
 use bitwarden_core::key_management::crypto::{InitUserCryptoMethod, InitUserCryptoRequest};
 use bitwarden_crypto::{EncString, Kdf, SymmetricCryptoKey};
 use bitwarden_unlock::{SessionKey, UnlockClientExt, UnlockMethod};
 use bitwarden_core::UserId;
+use chrono::Utc;
 use std::str::FromStr;
 
 /// Load a freshly decrypted user key into the SDK's key store.
@@ -106,6 +109,90 @@ pub async fn persist_account_state(
         .update(WrappedAccountCryptographicState::V1 { private_key })
         .await
         .context("could not persist the account cryptographic state")?;
+
+    Ok(())
+}
+
+/// Hand the tokens from a successful login to the SDK.
+///
+/// `PasswordManagerTokenHandler` reads `AUTHENTICATION_TOKENS` on every
+/// authenticated request and renews from it, so writing these two settings is
+/// the whole of token management on our side — there is no refresh code left in
+/// the CLI.
+///
+/// `USER_LOGIN_METHOD` is not optional: renewal needs the `client_id` to send to
+/// the identity service, and for an API-key login it needs the credentials
+/// themselves, because those tokens are re-minted rather than refreshed.
+/// Without it, renewal fails with `NotAuthenticated` and the CLI stops working
+/// about an hour after login.
+///
+/// The SDK's own `login_password` does this via `InternalClient::set_tokens`,
+/// which is `pub(crate)`. We write the same settings directly, with a
+/// `client_id` of `cli` rather than the `web` that method hardcodes.
+pub async fn persist_tokens(
+    client: &Client,
+    login_method: UserLoginMethod,
+    access_token: &str,
+    refresh_token: Option<&str>,
+    expires_in: u64,
+) -> Result<()> {
+    let state = client.platform().state();
+
+    state
+        .setting(USER_LOGIN_METHOD)
+        .context("no user_login_method setting")?
+        .update(login_method)
+        .await
+        .context("could not persist the login method")?;
+
+    state
+        .setting(AUTHENTICATION_TOKENS)
+        .context("no authentication_tokens setting")?
+        .update(AuthenticationTokens {
+            access_token: access_token.to_string(),
+            refresh_token: refresh_token.map(str::to_string),
+            expires_on: Utc::now().timestamp() + expires_in as i64,
+        })
+        .await
+        .context("could not persist the authentication tokens")?;
+
+    Ok(())
+}
+
+/// Whether a login has been persisted, i.e. whether authenticated calls can be
+/// attempted at all.
+///
+/// Deliberately does not check expiry: the token handler renews an expired
+/// access token transparently, so an expired one is still "logged in".
+pub async fn is_authenticated(client: &Client) -> bool {
+    let Ok(setting) = client.platform().state().setting(AUTHENTICATION_TOKENS) else {
+        return false;
+    };
+
+    matches!(setting.get().await, Ok(Some(_)))
+}
+
+/// Forget the persisted tokens and login method, i.e. `bw logout`.
+///
+/// Clearing the login method matters as much as the tokens: leaving an API-key
+/// login method behind would let the token handler mint fresh tokens from the
+/// stored client secret after logout.
+pub async fn clear_tokens(client: &Client) -> Result<()> {
+    let state = client.platform().state();
+
+    state
+        .setting(AUTHENTICATION_TOKENS)
+        .context("no authentication_tokens setting")?
+        .delete()
+        .await
+        .context("could not clear the authentication tokens")?;
+
+    state
+        .setting(USER_LOGIN_METHOD)
+        .context("no user_login_method setting")?
+        .delete()
+        .await
+        .context("could not clear the login method")?;
 
     Ok(())
 }

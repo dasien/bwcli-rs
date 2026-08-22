@@ -47,11 +47,28 @@ tree calls them: not the wasm bindings, not uniffi, not upstream `bw`.
 `FoldersClient` has no `delete` at all.
 
 Consequence: vault writes are split, each side forced rather than chosen.
-- SDK: cipher delete / soft-delete / restore / move (ids only; these update the
-  state repository themselves).
-- Hand-rolled + explicit repository write: cipher create/edit, all folder
-  writes. The explicit write matters because reads now come from the repository,
-  so without it a create would not appear until the next sync.
+- `CiphersClient`: cipher delete / soft-delete / restore / move (ids only; these
+  update the state repository themselves).
+- Generated `CiphersApi`/`FoldersApi` + an explicit repository write: cipher
+  create/edit, all folder writes. The explicit write matters because reads now
+  come from the repository, so without it a create would not appear until the
+  next sync.
+
+Step 3 closed the *transport* half of this: the generated clients are the same
+ones `CiphersClient` calls internally, so these writes share the SDK's
+authentication, renewal and 401 retry. What is still missing is only the
+higher-level bookkeeping. Two smaller gaps had to be worked around:
+
+- `Cipher` has a public `TryFrom<CipherDetailsResponseModel>`, but the write
+  endpoints answer with `CipherResponseModel`. The SDK bridges these with
+  `PartialCipher::merge_with_cipher`, which is `pub(crate)`. The two models are
+  field-for-field identical apart from `collectionIds`, so `write_service`
+  widens one into the other by destructuring — which makes the compiler flag it
+  if that stops being true.
+- `CipherResponseModel` carries no `collectionIds`, so an edit has to carry the
+  ones it sent forward by hand. Missing this would silently unshare an
+  organization item on every edit. (Upstream's `edit.rs` has a test for exactly
+  this, which is how the trap was spotted.)
 
 Revisit if those types get exported.
 
@@ -188,8 +205,30 @@ Ordered so correctness work lands on a green build, before the large migration.
       pattern the deferred state decision would extend to ciphers and folders.
       **Not covered:** file Sends (refused explicitly on create/edit; `receive`
       shows metadata and warns) and email-OTP Sends. Both tracked separately.
-- [ ] **8. Optional:** `bitwarden-auth` `login_via_password` (no 2FA or API-key
-      support yet — keep the hand-rolled path for those); `generate` parity,
+- [x] **8. Hand tokens to the SDK (`PasswordManagerTokenHandler`).** Done, and
+      it deleted more than it added: `TokenManager` (269 LOC), `StoredAccessToken`,
+      `TokenRefreshRequest`/`TokenResponse`, every `*_with_auth` method on
+      `ApiClient`, `valid_access_token`, `execute_with_retry`'s refresh branch,
+      `AccountManager::is_logged_in` and two dead `SessionManager` methods.
+      Tokens now live in the SDK's `AUTHENTICATION_TOKENS` setting alongside a
+      `USER_LOGIN_METHOD` (`client_id: "cli"`), and the SDK's middleware owns
+      renewal: proactive at a 5-minute margin, once more on a 401, serialized
+      behind a mutex. That is the same three things our hand-rolled path did,
+      each of which had a bug.
+      Prerequisite, done first: move cipher create/edit and all folder writes off
+      the hand-rolled HTTP client and onto the generated `CiphersApi`/`FoldersApi`.
+      With that, `BitwardenApiClient` has **no authenticated method left** — it
+      serves only login, prelogin and the identity endpoints. Its doc comment now
+      says so, because adding one back would recreate the split token state.
+      `InternalClient::set_tokens`/`set_login_method` are `pub(crate)`, so
+      `sdk_session::persist_tokens` writes the same two settings directly. Doing
+      it by hand rather than via `bitwarden_core::auth().login_password` is
+      deliberate: that method hardcodes `DeviceType::ChromeBrowser`, a fixed
+      device identifier, and `client_id: "web"` — a CLI login would show up as a
+      Chrome device.
+      Note: **tokens no longer live in `data.json`.** Existing logins must
+      re-run `bw login`; see step 9.
+- [ ] **9. Remaining:** one-time `data.json` importer; `generate` parity,
       `config server`, `clap_complete`, `bitwarden-cli` color.
 
 ## Bugs found and fixed along the way

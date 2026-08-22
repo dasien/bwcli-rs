@@ -2,7 +2,9 @@
 //!
 //! Tests the authentication service with mock HTTP server and real storage
 
+use bitwarden_core::client::persisted_state::USER_LOGIN_METHOD;
 use bitwarden_crypto::{Kdf, MasterKey};
+use bw_core::services::sdk_session;
 use bw_core::services::{
     api::{BitwardenApiClient, Environment},
     auth::{AuthError, AuthService},
@@ -82,7 +84,7 @@ async fn setup_test_auth_service(
 
     let environment = Environment::from_base_url(&api_url).expect("Failed to create environment");
     let api_client = Arc::new(
-        BitwardenApiClient::new(environment, Arc::clone(&storage), None)
+        BitwardenApiClient::new(environment, None)
             .expect("Failed to create API client"),
     );
 
@@ -93,7 +95,6 @@ async fn setup_test_auth_service(
         bw_core::services::create_sdk_client_with_state(
             Some(api_url.clone()),
             Some(api_url.clone()),
-            Arc::new(bw_core::services::api::StoredAccessToken::new(Arc::clone(&api_client))),
             temp_state,
         )
         .await
@@ -121,7 +122,7 @@ async fn another_invocation(
 
     let environment = Environment::from_base_url(&api_url).expect("Failed to create environment");
     let api_client = Arc::new(
-        BitwardenApiClient::new(environment, Arc::clone(&storage), None)
+        BitwardenApiClient::new(environment, None)
             .expect("Failed to create API client"),
     );
 
@@ -129,7 +130,6 @@ async fn another_invocation(
         bw_core::services::create_sdk_client_with_state(
             Some(api_url.clone()),
             Some(api_url),
-            Arc::new(bw_core::services::api::StoredAccessToken::new(Arc::clone(&api_client))),
             dir.to_path_buf(),
         )
         .await
@@ -143,6 +143,13 @@ async fn another_invocation(
 }
 
 /// Setup standard mocks for password login tests
+/// A client over an existing state directory, i.e. the next `bw` invocation.
+async fn next_invocation_client(dir: &std::path::Path) -> bitwarden_core::Client {
+    bw_core::services::create_sdk_client_with_state(None, None, dir.to_path_buf())
+        .await
+        .unwrap()
+}
+
 async fn setup_login_mocks(
     mock_server: &MockServer,
     encrypted_user_key: &str,
@@ -191,7 +198,7 @@ async fn test_login_with_password_success() {
     setup_login_mocks(&mock_server, &encrypted_user_key, &private_key).await;
 
     // Create test service
-    let (auth_service, storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
+    let (auth_service, storage, temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
     // Execute login
     let result = auth_service
@@ -210,15 +217,16 @@ async fn test_login_with_password_success() {
     assert_eq!(login_result.user_id, TEST_USER_ID);
     assert!(!login_result.session_key.is_empty());
 
-    // Verify storage persistence - check namespaced keys
-    let storage = storage.lock().await;
-
-    // Check access token is stored with namespaced key
-    let access_token_key = StorageKey::UserAccessToken.format(Some(TEST_USER_ID));
-    let access_token: Option<String> = storage.get(&access_token_key).unwrap();
-    assert!(access_token.is_some(), "Access token should be stored");
+    // Tokens must be readable by a *later* invocation, which is the only thing
+    // that matters: that is how the token handler finds them. A fresh client
+    // over the same directory models exactly that.
+    assert!(
+        sdk_session::is_authenticated(&next_invocation_client(temp_dir.path()).await).await,
+        "the SDK should hold authentication tokens after login"
+    );
 
     // Check KDF config is stored with namespaced key
+    let storage = storage.lock().await;
     let kdf_key = StorageKey::UserKdfConfig.format(Some(TEST_USER_ID));
     let kdf_config: Option<serde_json::Value> = storage.get(&kdf_key).unwrap();
     assert!(kdf_config.is_some(), "KDF config should be stored");
@@ -465,7 +473,7 @@ async fn test_logout_success() {
     let mock_server = MockServer::start().await;
     setup_login_mocks(&mock_server, &encrypted_user_key, &private_key).await;
 
-    let (auth_service, storage, _temp_dir) = setup_test_auth_service(mock_server.uri()).await;
+    let (auth_service, _storage, temp_dir) = setup_test_auth_service(mock_server.uri()).await;
 
     // Login first
     let login_result = auth_service
@@ -482,13 +490,10 @@ async fn test_logout_success() {
         login_result.err()
     );
 
-    // Verify data is stored
-    {
-        let storage = storage.lock().await;
-        let access_token_key = StorageKey::UserAccessToken.format(Some(TEST_USER_ID));
-        let token: Option<String> = storage.get(&access_token_key).unwrap();
-        assert!(token.is_some(), "Access token should be stored after login");
-    }
+    assert!(
+        sdk_session::is_authenticated(&next_invocation_client(temp_dir.path()).await).await,
+        "the SDK should hold authentication tokens after login"
+    );
 
     // Execute logout
     let logout_result = auth_service.logout().await;
@@ -498,18 +503,26 @@ async fn test_logout_success() {
         logout_result.err()
     );
 
-    // Verify tokens are cleared (set to null)
-    {
-        let storage = storage.lock().await;
-        let access_token_key = StorageKey::UserAccessToken.format(Some(TEST_USER_ID));
-        let token: Option<serde_json::Value> = storage.get(&access_token_key).unwrap();
-        // Token should be null (not removed, set to null per TypeScript CLI behavior)
-        assert!(
-            token == Some(serde_json::Value::Null) || token.is_none(),
-            "Access token should be cleared after logout, got: {:?}",
-            token
-        );
-    }
+    // Logout must clear the tokens *and* the login method — an API-key login
+    // method left behind would let the token handler mint fresh tokens from the
+    // stored client secret.
+    let after = next_invocation_client(temp_dir.path()).await;
+    assert!(
+        !sdk_session::is_authenticated(&after).await,
+        "authentication tokens should be gone after logout"
+    );
+    assert!(
+        after
+            .platform()
+            .state()
+            .setting(USER_LOGIN_METHOD)
+            .unwrap()
+            .get()
+            .await
+            .unwrap()
+            .is_none(),
+        "the login method should be gone after logout"
+    );
 }
 
 #[tokio::test]

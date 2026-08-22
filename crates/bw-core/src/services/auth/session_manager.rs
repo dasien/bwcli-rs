@@ -3,11 +3,11 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Account and device state that is not part of the session itself.
+/// The device identifier, which is neither session nor vault state.
 ///
 /// Session keys are minted and consumed by `bitwarden-unlock` (see
-/// `services::sdk_session`); what remains here is the device identifier, token
-/// lookup, and login-state checks.
+/// `services::sdk_session`), and tokens and login state belong to the SDK's
+/// state database, so this is all that is left.
 pub struct SessionManager {
     storage: Arc<Mutex<JsonFileStorage>>,
 }
@@ -23,55 +23,6 @@ impl SessionManager {
 
 
 
-
-    /// Check if user is logged in (has auth state)
-    ///
-    /// Note: This is a legacy check that doesn't use the new namespaced keys.
-    /// Prefer using AccountManager::is_logged_in() for accurate state checking.
-    pub async fn is_logged_in(&self) -> Result<bool> {
-        let storage = self.storage.lock().await;
-
-        // Check for active account ID first (new format)
-        let active_id_key = StorageKey::GlobalActiveAccountId.format(None);
-        let active_id: Option<serde_json::Value> = storage.get(&active_id_key)?;
-
-        if let Some(serde_json::Value::String(user_id)) = active_id {
-            if !user_id.is_empty() {
-                // Check if user has access token
-                let token_key = StorageKey::UserAccessToken.format(Some(&user_id));
-                let token: Option<serde_json::Value> = storage.get(&token_key)?;
-                if matches!(token, Some(serde_json::Value::String(s)) if !s.is_empty()) {
-                    return Ok(true);
-                }
-            }
-        }
-
-        // Fall back to legacy format check
-        let access_token: Option<String> = storage.get("accessToken")?;
-        Ok(access_token.is_some())
-    }
-
-    /// Get the active user's access token
-    ///
-    /// Returns the access token for the currently active user, or None if not logged in.
-    pub async fn get_access_token(&self) -> Result<Option<String>> {
-        let storage = self.storage.lock().await;
-
-        // Get active user ID
-        let active_id_key = StorageKey::GlobalActiveAccountId.format(None);
-        let active_id: Option<serde_json::Value> = storage.get(&active_id_key)?;
-
-        let user_id = match active_id {
-            Some(serde_json::Value::String(id)) if !id.is_empty() => id,
-            _ => return Ok(None),
-        };
-
-        // Get access token for this user
-        let token_key = StorageKey::UserAccessToken.format(Some(&user_id));
-        let token: Option<String> = storage.get(&token_key)?;
-
-        Ok(token)
-    }
 
     /// Get device ID from storage or generate new one
     pub async fn get_or_create_device_id(&self) -> Result<String> {

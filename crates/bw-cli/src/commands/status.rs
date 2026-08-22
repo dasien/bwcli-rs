@@ -1,7 +1,8 @@
 use crate::AppContext;
 use crate::GlobalArgs;
 use crate::output::Response;
-use bw_core::services::storage::{AccountManager, Storage, StorageKey};
+use bw_core::services::sdk_session;
+use bw_core::services::storage::AccountManager;
 use bw_core::services::vault::VaultService;
 use clap::Args;
 use serde::Serialize;
@@ -48,14 +49,8 @@ pub async fn execute_status(
             ("unauthenticated".to_string(), None, None)
         }
         Some(uid) => {
-            // Check if we have an access token
-            let storage_guard = storage.lock().await;
-            let token_key = StorageKey::UserAccessToken.format(Some(uid));
-            let has_token = storage_guard
-                .get::<serde_json::Value>(&token_key)?
-                .map(|v| matches!(v, serde_json::Value::String(s) if !s.is_empty()))
-                .unwrap_or(false);
-            drop(storage_guard);
+            // Tokens live in the SDK's state database, not `data.json`.
+            let has_token = sdk_session::is_authenticated(ctx.sdk()).await;
 
             if !has_token {
                 // Has user ID but no token = unauthenticated
@@ -78,7 +73,6 @@ pub async fn execute_status(
 
                 // Get last sync timestamp
                 let vault_service = VaultService::new(
-                    ctx.api_client(),
                     Arc::clone(&storage),
                     Arc::new(ctx.sdk().clone()),
                     Arc::new(account_manager),

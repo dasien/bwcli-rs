@@ -1,21 +1,20 @@
-use super::{
-    environment::Environment, errors::ApiError, token_manager::TokenManager, traits::ApiClient,
-};
-use crate::models::api::token::{TokenRefreshRequest, TokenResponse};
-use crate::services::storage::JsonFileStorage;
+use super::{environment::Environment, errors::ApiError, traits::ApiClient};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client as ReqwestClient, Request, Response, StatusCode, header};
-use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
-/// Bitwarden API client implementation
+/// HTTP client for the endpoints the SDK does not cover.
+///
+/// This is **unauthenticated by design**. Every authenticated call now goes
+/// through the SDK's generated clients, which carry its token handler; what is
+/// left here is login, prelogin and the identity endpoints, none of which take a
+/// bearer token. Adding an authenticated method here would reintroduce the split
+/// token state this deliberately removed — reach for
+/// `Client::internal::get_api_configurations()` instead.
 ///
 /// Features:
-/// - Automatic token refresh on 401 responses
 /// - Connection pooling (via reqwest)
 /// - Proxy support from environment variables
 /// - TLS with certificate validation (rustls)
@@ -27,12 +26,6 @@ pub struct BitwardenApiClient {
 
     /// Environment URLs
     environment: Environment,
-
-    /// Token manager for authentication
-    token_manager: Arc<TokenManager>,
-
-    /// Storage for configuration
-    storage: Arc<Mutex<JsonFileStorage>>,
 }
 
 impl BitwardenApiClient {
@@ -40,18 +33,13 @@ impl BitwardenApiClient {
     ///
     /// # Arguments
     /// * `environment` - Environment URLs configuration
-    /// * `storage` - Storage for token/config access
     /// * `timeout_seconds` - Optional request timeout (default: 60s)
     ///
     /// # Configuration
     /// Reads from environment variables:
     /// - HTTP_PROXY / HTTPS_PROXY - Proxy server
     /// - NO_PROXY - Proxy bypass patterns
-    pub fn new(
-        environment: Environment,
-        storage: Arc<Mutex<JsonFileStorage>>,
-        timeout_seconds: Option<u64>,
-    ) -> Result<Self> {
+    pub fn new(environment: Environment, timeout_seconds: Option<u64>) -> Result<Self> {
         let timeout = Duration::from_secs(timeout_seconds.unwrap_or(60));
 
         // Build HTTP client with all features
@@ -77,13 +65,9 @@ impl BitwardenApiClient {
             .build()
             .map_err(|e| ApiError::Configuration(format!("Failed to create HTTP client: {}", e)))?;
 
-        let token_manager = Arc::new(TokenManager::new(Arc::clone(&storage)));
-
         Ok(Self {
             http_client,
             environment,
-            token_manager,
-            storage,
         })
     }
 
@@ -108,44 +92,9 @@ impl BitwardenApiClient {
         format!("{}/{}", base, path)
     }
 
-    /// Execute request with automatic retry on token refresh
-    async fn execute_with_retry(
-        &self,
-        mut request: Request,
-        requires_auth: bool,
-    ) -> Result<Response> {
-        // Try request first time
-        let response = self
-            .http_client
-            .execute(
-                request
-                    .try_clone()
-                    .ok_or_else(|| anyhow::anyhow!("Failed to clone request"))?,
-            )
-            .await?;
-
-        // Check for 401 Unauthorized (expired token)
-        if requires_auth && response.status() == StatusCode::UNAUTHORIZED {
-            // Attempt token refresh
-            let new_token = self
-                .token_manager
-                .refresh_access_token(|refresh_req| async {
-                    self.post_token_refresh(refresh_req).await
-                })
-                .await?;
-
-            // Update request with new token
-            request.headers_mut().insert(
-                header::AUTHORIZATION,
-                header::HeaderValue::from_str(&format!("Bearer {}", new_token.expose_secret()))
-                    .unwrap(),
-            );
-
-            // Retry request with new token
-            let response = self.http_client.execute(request).await?;
-            return self.process_response(response).await;
-        }
-
+    /// Execute a request and map its status to an error.
+    async fn execute(&self, request: Request) -> Result<Response> {
+        let response = self.http_client.execute(request).await?;
         self.process_response(response).await
     }
 
@@ -197,57 +146,10 @@ impl BitwardenApiClient {
         }
     }
 
-    /// A usable access token, refreshing it first if it is expired or close to
-    /// expiring.
-    ///
-    /// The SDK's `ClientManagedTokenHandler` attaches whatever token we hand it
-    /// but never refreshes, so anything driving the SDK's generated API clients
-    /// has to come through here or it will start 401ing after an hour.
-    pub async fn valid_access_token(&self) -> Option<String> {
-        let current = self.token_manager.get_access_token().await.ok().flatten();
-
-        if let Some(token) = &current
-            && !access_token_expires_within(token.expose_secret(), TOKEN_REFRESH_MARGIN_SECS)
-        {
-            return Some(token.expose_secret().to_string());
-        }
-
-        // Expired, expiring imminently, or unreadable: try to renew.
-        match self
-            .token_manager
-            .refresh_access_token(|req| async { self.post_token_refresh(req).await })
-            .await
-        {
-            Ok(token) => Some(token.expose_secret().to_string()),
-            Err(e) => {
-                tracing::debug!("Could not refresh the access token: {e}");
-                // Fall back to whatever we had; the server will reject it with a
-                // clearer error than we can produce here.
-                current.map(|t| t.expose_secret().to_string())
-            }
-        }
-    }
-
     /// Extract error message from response body
     async fn extract_error_message(&self, response: Response) -> Result<String> {
         let text = response.text().await?;
         Ok(describe_error_body(&text))
-    }
-
-    /// Post token refresh request (special handling for identity endpoint)
-    async fn post_token_refresh(&self, request: TokenRefreshRequest) -> Result<TokenResponse> {
-        let url = format!("{}/connect/token", self.environment.identity_url());
-
-        let response = self
-            .http_client
-            .post(&url)
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .form(&request)
-            .send()
-            .await?;
-
-        let response = self.process_response(response).await?;
-        deserialize_response(response, &url).await
     }
 
     /// Post form-encoded data (for OAuth2 endpoints)
@@ -295,7 +197,7 @@ impl BitwardenApiClient {
 
         let request = request_builder.build()?;
 
-        let response = self.execute_with_retry(request, false).await?;
+        let response = self.execute(request).await?;
         deserialize_response(response, &url).await
     }
 
@@ -318,7 +220,7 @@ impl BitwardenApiClient {
             .json(body)
             .build()?;
 
-        let response = self.execute_with_retry(request, false).await?;
+        let response = self.execute(request).await?;
         deserialize_response(response, &url).await
     }
 
@@ -342,30 +244,7 @@ impl BitwardenApiClient {
             .form(form_data)
             .build()?;
 
-        let response = self.execute_with_retry(request, false).await?;
-        deserialize_response(response, &url).await
-    }
-
-    /// GET with explicit authorization token
-    ///
-    /// Used when we have a token but haven't stored it yet (during login flow).
-    ///
-    /// # Arguments
-    /// * `path` - API path
-    /// * `access_token` - Bearer token for authorization
-    pub async fn get_authenticated<R>(&self, path: &str, access_token: &str) -> Result<R>
-    where
-        R: for<'de> Deserialize<'de>,
-    {
-        let url = self.build_url(path, false);
-
-        let request = self
-            .http_client
-            .get(&url)
-            .header(header::AUTHORIZATION, format!("Bearer {}", access_token))
-            .build()?;
-
-        let response = self.execute_with_retry(request, false).await?;
+        let response = self.execute(request).await?;
         deserialize_response(response, &url).await
     }
 }
@@ -379,54 +258,8 @@ impl ApiClient for BitwardenApiClient {
         let url = self.build_url(path, false);
         let request = self.http_client.get(&url).build()?;
 
-        let response = self.execute_with_retry(request, false).await?;
+        let response = self.execute(request).await?;
         deserialize_response(response, &url).await
-    }
-
-    async fn get_with_auth<T>(&self, path: &str) -> Result<T>
-    where
-        T: for<'de> Deserialize<'de>,
-    {
-        let url = self.build_url(path, false);
-
-        // Get access token
-        let token = self
-            .token_manager
-            .get_access_token()
-            .await?
-            .ok_or_else(|| ApiError::Authentication {
-                message: "Not authenticated".to_string(),
-                hint: "Run 'bw login' to authenticate".to_string(),
-            })?;
-
-        let request = self
-            .http_client
-            .get(&url)
-            .header(
-                header::AUTHORIZATION,
-                format!("Bearer {}", token.expose_secret()),
-            )
-            .build()?;
-
-        let response = self.execute_with_retry(request, true).await?;
-
-        // Debug: get raw text first
-        let text = response.text().await?;
-        tracing::debug!(
-            "Raw API response (first 2000 chars): {}",
-            &text[..text.len().min(2000)]
-        );
-
-        // Then parse
-        let data: T = serde_json::from_str(&text).map_err(|e| {
-            anyhow::anyhow!(
-                "JSON parse error: {} - Response: {}",
-                e,
-                &text[..text.len().min(500)]
-            )
-        })?;
-
-        Ok(data)
     }
 
     async fn post<T, R>(&self, path: &str, body: &T) -> Result<R>
@@ -445,148 +278,15 @@ impl ApiClient for BitwardenApiClient {
             .json(body)
             .build()?;
 
-        let response = self.execute_with_retry(request, false).await?;
+        let response = self.execute(request).await?;
         deserialize_response(response, &url).await
-    }
-
-    async fn post_with_auth<T, R>(&self, path: &str, body: &T) -> Result<R>
-    where
-        T: Serialize + Send + Sync,
-        R: for<'de> Deserialize<'de>,
-    {
-        let url = self.build_url(path, false);
-
-        let token = self
-            .token_manager
-            .get_access_token()
-            .await?
-            .ok_or_else(|| ApiError::Authentication {
-                message: "Not authenticated".to_string(),
-                hint: "Run 'bw login' to authenticate".to_string(),
-            })?;
-
-        let request = self
-            .http_client
-            .post(&url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(
-                header::AUTHORIZATION,
-                format!("Bearer {}", token.expose_secret()),
-            )
-            .json(body)
-            .build()?;
-
-        let response = self.execute_with_retry(request, true).await?;
-        deserialize_response(response, &url).await
-    }
-
-    async fn put_with_auth<T, R>(&self, path: &str, body: &T) -> Result<R>
-    where
-        T: Serialize + Send + Sync,
-        R: for<'de> Deserialize<'de>,
-    {
-        let url = self.build_url(path, false);
-
-        let token = self
-            .token_manager
-            .get_access_token()
-            .await?
-            .ok_or_else(|| ApiError::Authentication {
-                message: "Not authenticated".to_string(),
-                hint: "Run 'bw login' to authenticate".to_string(),
-            })?;
-
-        let request = self
-            .http_client
-            .put(&url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(
-                header::AUTHORIZATION,
-                format!("Bearer {}", token.expose_secret()),
-            )
-            .json(body)
-            .build()?;
-
-        let response = self.execute_with_retry(request, true).await?;
-        deserialize_response(response, &url).await
-    }
-
-    async fn put_with_auth_no_response(&self, path: &str) -> Result<()> {
-        let url = self.build_url(path, false);
-
-        let token = self
-            .token_manager
-            .get_access_token()
-            .await?
-            .ok_or_else(|| ApiError::Authentication {
-                message: "Not authenticated".to_string(),
-                hint: "Run 'bw login' to authenticate".to_string(),
-            })?;
-
-        let request = self
-            .http_client
-            .put(&url)
-            .header(
-                header::AUTHORIZATION,
-                format!("Bearer {}", token.expose_secret()),
-            )
-            .build()?;
-
-        let _response = self.execute_with_retry(request, true).await?;
-
-        Ok(())
-    }
-
-    async fn delete_with_auth(&self, path: &str) -> Result<()> {
-        let url = self.build_url(path, false);
-
-        let token = self
-            .token_manager
-            .get_access_token()
-            .await?
-            .ok_or_else(|| ApiError::Authentication {
-                message: "Not authenticated".to_string(),
-                hint: "Run 'bw login' to authenticate".to_string(),
-            })?;
-
-        let request = self
-            .http_client
-            .delete(&url)
-            .header(
-                header::AUTHORIZATION,
-                format!("Bearer {}", token.expose_secret()),
-            )
-            .build()?;
-
-        let _response = self.execute_with_retry(request, true).await?;
-
-        Ok(())
     }
 
     fn environment(&self) -> &Environment {
         &self.environment
     }
-
-    async fn is_authenticated(&self) -> bool {
-        self.token_manager
-            .get_access_token()
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-    }
 }
 
-/// Deserialize a response body, and on failure describe the *shape* mismatch.
-///
-/// `reqwest`'s `Response::json` collapses every parse problem into "error
-/// decoding response body", which says nothing about which field is wrong. That
-/// matters most on `/connect/token`, where our hand-written response models can
-/// drift from the server.
-///
-/// The body is deliberately never included in the error: token responses carry
-/// access and refresh tokens. Only the serde message and the set of top-level
-/// field *names* are reported.
 async fn deserialize_response<R>(response: Response, url: &str) -> Result<R>
 where
     R: for<'de> Deserialize<'de>,
@@ -734,24 +434,4 @@ mod tests {
         assert!(describe_error_body("<html>502</html>").contains("502"));
         assert_eq!(describe_error_body("   "), "empty response body");
     }
-}
-
-/// Refresh this long before expiry rather than waiting for a 401.
-const TOKEN_REFRESH_MARGIN_SECS: u64 = 300;
-
-/// Whether a JWT access token expires within `margin` seconds.
-///
-/// An unparseable token counts as expiring, so we attempt a refresh rather than
-/// sending something the server will reject.
-fn access_token_expires_within(token: &str, margin: u64) -> bool {
-    use bitwarden_core::auth::JwtToken;
-
-    let Ok(parsed) = token.parse::<JwtToken>() else {
-        return true;
-    };
-
-    let now = chrono::Utc::now().timestamp();
-    let cutoff = now.saturating_add(margin as i64);
-
-    (parsed.exp as i64) <= cutoff
 }

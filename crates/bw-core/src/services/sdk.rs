@@ -4,7 +4,7 @@
 //! It re-exports types from the Bitwarden SDK for use throughout the CLI.
 
 use anyhow::Result;
-use bitwarden_core::auth::{ClientManagedTokenHandler, ClientManagedTokens};
+use bitwarden_auth::token_management::PasswordManagerTokenHandler;
 use bitwarden_core::client::persisted_state::OrganizationSharedKey;
 use bitwarden_core::key_management::LocalUserDataKeyState;
 use bitwarden_send::Send as SendItem;
@@ -54,26 +54,6 @@ pub fn create_sdk_client(api_url: Option<String>, identity_url: Option<String>) 
     Ok(Client::new(Some(client_settings(api_url, identity_url))))
 }
 
-/// Create the SDK client with access to our stored access token.
-///
-/// Prefer this over [`create_sdk_client`] anywhere the client will make
-/// authenticated calls: without a token handler the SDK's generated API clients
-/// send no credentials, which is why the CLI historically maintained a second,
-/// separate HTTP stack.
-///
-/// `ClientManagedTokenHandler` attaches the bearer token but does not refresh
-/// it — refresh remains ours.
-pub fn create_sdk_client_with_tokens(
-    api_url: Option<String>,
-    identity_url: Option<String>,
-    tokens: Arc<dyn ClientManagedTokens>,
-) -> Result<Client> {
-    Ok(Client::new_with_token_handler(
-        Some(client_settings(api_url, identity_url)),
-        ClientManagedTokenHandler::new(tokens),
-    ))
-}
-
 /// Create the SDK client with persistent SDK-managed state.
 ///
 /// State lives in `{appdata}/user.sqlite`, one table per registered repository
@@ -84,10 +64,16 @@ pub fn create_sdk_client_with_tokens(
 ///
 /// `db_name` is fixed rather than per-user: the CLI has a single active account
 /// at a time, and `logout` wipes the registry.
+///
+/// Authentication is [`PasswordManagerTokenHandler`], which reads and writes the
+/// `AUTHENTICATION_TOKENS` setting in that same database. It attaches the bearer
+/// token to requests the generated clients mark as authenticated, renews it
+/// proactively (5-minute margin) and once more on a 401, and serializes
+/// concurrent renewals behind a mutex. It replaces our `TokenManager`, whose
+/// hand-rolled equivalent of all three had bugs in each.
 pub async fn create_sdk_client_with_state(
     api_url: Option<String>,
     identity_url: Option<String>,
-    tokens: Arc<dyn ClientManagedTokens>,
     appdata_dir: PathBuf,
 ) -> Result<Client> {
     let registry = StateRegistry::new_with_db(
@@ -102,7 +88,7 @@ pub async fn create_sdk_client_with_state(
 
     Ok(Client::builder()
         .with_settings(client_settings(api_url, identity_url))
-        .with_token_handler(ClientManagedTokenHandler::new(tokens))
+        .with_token_handler(Arc::new(PasswordManagerTokenHandler::default()))
         .with_state(registry)
         .build())
 }

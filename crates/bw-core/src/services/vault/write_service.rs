@@ -1,7 +1,8 @@
 //! Write service for vault CRUD operations
 //!
-//! Uses the SDK's `CiphersClient` where its API is actually reachable, and
-//! hand-rolled HTTP where it is not.
+//! Everything here goes through the SDK: either its high-level
+//! [`bitwarden_vault::CiphersClient`], or — where that client's request types
+//! are unreachable — its generated `bitwarden-api-api` clients.
 //!
 //! ## Why this is split
 //!
@@ -12,19 +13,22 @@
 //! including the wasm bindings, uniffi and upstream `bw`. `FoldersClient` has no
 //! `delete` at all. So:
 //!
-//! - **SDK**: cipher delete / soft-delete / restore / move (these take only
-//!   `CipherId`/`FolderId`, and update the state repository themselves).
-//! - **Hand-rolled**: cipher create/edit and all folder writes, each followed by
-//!   an explicit repository update so reads stay consistent.
+//! - **`CiphersClient`**: delete / soft-delete / restore / move. These take only
+//!   ids and update the state repository themselves.
+//! - **Generated `CiphersApi`/`FoldersApi`**: cipher create/edit and all folder
+//!   writes, each followed by an explicit repository update so reads stay
+//!   consistent. These are the same clients the SDK's own `CiphersClient` calls,
+//!   so they share its authentication, token refresh and retry behaviour.
 //!
-//! Revisit the hand-rolled half if the SDK exports those request types.
+//! Revisit the second half if the SDK exports those request types; the
+//! difference would then be the repository bookkeeping, not the transport.
 
 use super::{CipherService, ConfirmationService, ValidationService, VaultError};
 use crate::models::vault::{CipherRequestModel, FolderRequestModel};
-use crate::services::api::{ApiClient, BitwardenApiClient, endpoints};
-use bitwarden_api_api::models::{CipherDetailsResponseModel, FolderResponseModel};
+use bitwarden_api_api::models::{
+    CipherDetailsResponseModel, CipherResponseModel, FolderResponseModel,
+};
 use bitwarden_core::Client;
-use bitwarden_state::repository::Repository;
 use bitwarden_vault::{
     Cipher, CipherId, CipherView, Folder, FolderId, FolderView, VaultClientExt,
 };
@@ -33,7 +37,6 @@ use std::sync::Arc;
 /// Service for vault write operations (create, update, delete)
 pub struct WriteService {
     sdk: Arc<Client>,
-    api_client: Arc<BitwardenApiClient>,
     cipher_service: Arc<CipherService>,
     validation_service: Arc<ValidationService>,
     confirmation_service: Arc<ConfirmationService>,
@@ -42,25 +45,28 @@ pub struct WriteService {
 impl WriteService {
     pub fn new(
         sdk: Arc<Client>,
-        api_client: Arc<BitwardenApiClient>,
         cipher_service: Arc<CipherService>,
         validation_service: Arc<ValidationService>,
         confirmation_service: Arc<ConfirmationService>,
     ) -> Self {
         Self {
             sdk,
-            api_client,
             cipher_service,
             validation_service,
             confirmation_service,
         }
     }
 
+    /// The SDK's generated API clients, authenticated by its token handler.
+    fn api(&self) -> Arc<bitwarden_core::client::ApiConfigurations> {
+        self.sdk.internal.get_api_configurations()
+    }
+
     /// Write a cipher into the SDK's state repository.
     ///
-    /// The SDK's own write methods do this for us; the hand-rolled ones cannot,
-    /// and reads come from the repository, so without this a create or edit
-    /// would not show up until the next sync.
+    /// `CiphersClient` does this for us; the generated clients are a layer below
+    /// it and cannot, and reads come from the repository, so without this a
+    /// create or edit would not show up until the next sync.
     async fn store_cipher(&self, cipher: Cipher) -> Result<(), VaultError> {
         let Some(id) = cipher.id else {
             return Ok(());
@@ -116,16 +122,15 @@ impl WriteService {
         let encryption_context = self.cipher_service.encrypt_cipher(cipher_view).await?;
         let request: CipherRequestModel = encryption_context.into();
 
-        // Deserialize into the tolerant generated model, not `Cipher` — that type
-        // is `deny_unknown_fields` and rejects the server's `object` field, which
-        // made writes report failure after succeeding.
-        let response: CipherDetailsResponseModel = self
+        let response = self
+            .api()
             .api_client
-            .post_with_auth(endpoints::api::ciphers::BASE, &request)
+            .ciphers_api()
+            .post(Some(request))
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
-        let created = cipher_from_response(response)?;
+        let created = cipher_from_response(response, None)?;
         self.store_cipher(created.clone()).await?;
 
         self.cipher_service.decrypt_cipher(created).await
@@ -148,16 +153,23 @@ impl WriteService {
         self.validation_service
             .validate_cipher_update(&cipher_view)?;
 
+        // `CipherResponseModel` carries no collection ids, so preserve the ones
+        // we sent. Dropping them would unshare an organization item on every
+        // edit.
+        let collection_ids = cipher_view.collection_ids.clone();
+
         let encryption_context = self.cipher_service.encrypt_cipher(cipher_view).await?;
         let request: CipherRequestModel = encryption_context.into();
 
-        let response: CipherDetailsResponseModel = self
+        let response = self
+            .api()
             .api_client
-            .put_with_auth(&endpoints::api::ciphers::by_id(id), &request)
+            .ciphers_api()
+            .put(cipher_id.into(), Some(request))
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
-        let updated = cipher_from_response(response)?;
+        let updated = cipher_from_response(response, Some(collection_ids))?;
         self.store_cipher(updated.clone()).await?;
 
         self.cipher_service.decrypt_cipher(updated).await
@@ -237,9 +249,11 @@ impl WriteService {
             name: encrypted.name.to_string(),
         };
 
-        let response: FolderResponseModel = self
+        let response = self
+            .api()
             .api_client
-            .post_with_auth(endpoints::api::folders::BASE, &request)
+            .folders_api()
+            .post(Some(request))
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
@@ -271,9 +285,11 @@ impl WriteService {
             name: encrypted.name.to_string(),
         };
 
-        let response: FolderResponseModel = self
+        let response = self
+            .api()
             .api_client
-            .put_with_auth(&endpoints::api::folders::by_id(id), &request)
+            .folders_api()
+            .put(id, Some(request))
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
@@ -291,8 +307,10 @@ impl WriteService {
         // `FoldersClient` has no delete method at all.
         let folder_id = Self::parse_folder_id(id)?;
 
-        self.api_client
-            .delete_with_auth(&endpoints::api::folders::by_id(id))
+        self.api()
+            .api_client
+            .folders_api()
+            .delete(id)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
 
@@ -305,12 +323,90 @@ impl WriteService {
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))
     }
-
 }
 
 /// Convert a cipher write response into a domain `Cipher`.
-fn cipher_from_response(response: CipherDetailsResponseModel) -> Result<Cipher, VaultError> {
-    Cipher::try_from(response).map_err(|e| {
+///
+/// `Cipher` only has a `TryFrom` for `CipherDetailsResponseModel`, and the write
+/// endpoints answer with `CipherResponseModel` — the same type minus
+/// `collectionIds`. The SDK bridges the two with a `pub(crate)` trait
+/// (`PartialCipher::merge_with_cipher`), so widen it here instead. Every other
+/// field is identical, and the compiler will flag this if that stops being true.
+fn cipher_from_response(
+    response: CipherResponseModel,
+    collection_ids: Option<Vec<bitwarden_collections::collection::CollectionId>>,
+) -> Result<Cipher, VaultError> {
+    let CipherResponseModel {
+        object,
+        id,
+        organization_id,
+        r#type,
+        data,
+        partial_data,
+        name,
+        notes,
+        login,
+        card,
+        identity,
+        secure_note,
+        ssh_key,
+        bank_account,
+        drivers_license,
+        passport,
+        fields,
+        password_history,
+        attachments,
+        organization_use_totp,
+        revision_date,
+        creation_date,
+        deleted_date,
+        reprompt,
+        key,
+        folder_id,
+        favorite,
+        edit,
+        view_password,
+        archived_date,
+        permissions,
+    } = response;
+
+    let details = CipherDetailsResponseModel {
+        object,
+        id,
+        organization_id,
+        r#type,
+        data,
+        partial_data,
+        name,
+        notes,
+        login,
+        card,
+        identity,
+        secure_note,
+        ssh_key,
+        bank_account,
+        drivers_license,
+        passport,
+        fields,
+        password_history,
+        attachments,
+        organization_use_totp,
+        revision_date,
+        creation_date,
+        deleted_date,
+        reprompt,
+        key,
+        folder_id,
+        favorite,
+        edit,
+        view_password,
+        archived_date,
+        permissions,
+        collection_ids: collection_ids
+            .map(|ids| ids.into_iter().map(Into::into).collect()),
+    };
+
+    Cipher::try_from(details).map_err(|e| {
         VaultError::ApiError(format!("could not read the cipher the server returned: {e}"))
     })
 }

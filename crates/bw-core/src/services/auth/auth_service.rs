@@ -17,12 +17,30 @@ use anyhow::Result;
 use crate::services::sdk_session;
 use bitwarden_core::Client;
 use bitwarden_core::auth::JwtToken;
+use bitwarden_core::client::login_method::UserLoginMethod;
 use bitwarden_crypto::EncString;
 use bitwarden_crypto::{CryptoError, Kdf, MasterKey, SymmetricCryptoKey};
 use secrecy::{ExposeSecret, Secret};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
+
+/// OAuth client id the CLI authenticates as. The token handler sends this on
+/// every renewal; a mismatch with the login request is rejected as
+/// `invalid_request`.
+const CLI_CLIENT_ID: &str = "cli";
+
+/// Token lifetime to record, in seconds.
+///
+/// `expires_in` is defaulted rather than required, so that an informational
+/// field cannot fail the whole login. If it *is* missing we record an already-
+/// expired token, which makes the first authenticated request renew before
+/// sending. That is the safe direction: inventing a lifetime we were not told
+/// would mean sending a token the server has already rejected and relying on the
+/// 401 retry instead.
+fn expires_in(response: &LoginResponse) -> u64 {
+    response.expires_in.max(0) as u64
+}
 
 /// Authentication service
 ///
@@ -143,13 +161,31 @@ impl AuthService {
             }
         };
 
+        // Step 8: Hand the tokens to the SDK, which owns them from here on.
+        let kdf: Kdf = (&kdf_config)
+            .try_into()
+            .map_err(|e: anyhow::Error| AuthError::KdfError {
+                message: e.to_string(),
+            })?;
+        sdk_session::persist_tokens(
+            &self.sdk,
+            UserLoginMethod::Username {
+                client_id: CLI_CLIENT_ID.to_string(),
+                email: email.clone(),
+                kdf,
+            },
+            &login_response.access_token,
+            Some(&login_response.refresh_token),
+            expires_in(&login_response),
+        )
+        .await
+        .map_err(|e| AuthError::Other(format!("{e:#}")))?;
+
         // Step 9: Persist authentication state
         debug!("Persisting authentication state");
         self.persist_auth_state(
             &user_id,
             &email,
-            &login_response.access_token,
-            &login_response.refresh_token,
             login_response.key.as_deref(),
             login_response.private_key.as_deref(),
             &kdf_config,
@@ -212,15 +248,28 @@ impl AuthService {
         // not unlock anything.
         let session_key_str = String::new();
 
+        // The stored login method carries the API key itself, because these
+        // tokens are re-minted from it rather than refreshed. The `kdf` is a
+        // placeholder: renewal never reads it, and an API-key login is not told
+        // the account's KDF parameters.
+        sdk_session::persist_tokens(
+            &self.sdk,
+            UserLoginMethod::ApiKey {
+                client_id: client_id.to_string(),
+                client_secret: client_secret.expose_secret().to_string(),
+                email: email.clone(),
+                kdf: Kdf::default_pbkdf2(),
+            },
+            &login_response.access_token,
+            Some(&login_response.refresh_token),
+            expires_in(&login_response),
+        )
+        .await
+        .map_err(|e| AuthError::Other(format!("{e:#}")))?;
+
         // Note: API key login doesn't have user key or KDF config
         // Persist minimal authentication state
-        self.persist_api_key_auth_state(
-            &user_id,
-            &email,
-            &login_response.access_token,
-            &login_response.refresh_token,
-        )
-        .await?;
+        self.persist_api_key_auth_state(&user_id, &email).await?;
 
         info!("API key login successful");
 
@@ -320,9 +369,9 @@ impl AuthService {
             .await?
             .ok_or(AuthError::NotLoggedIn)?;
 
-        // Check if logged in using account manager
-        let logged_in = self.account_manager.is_logged_in().await?;
-        if !logged_in {
+        // The SDK's token state is the only record of being logged in; tokens no
+        // longer live in `data.json`.
+        if !sdk_session::is_authenticated(&self.sdk).await {
             return Err(AuthError::NotLoggedIn);
         }
 
@@ -340,36 +389,28 @@ impl AuthService {
     pub async fn logout(&self) -> Result<(), AuthError> {
         info!("Logging out");
 
-        // Get active user ID before clearing
         let user_id = self
             .account_manager
             .get_active_user_id()
             .await?
             .ok_or(AuthError::NotLoggedIn)?;
 
-        let mut storage = self.storage.lock().await;
+        // Tokens and the login method live in SDK state. Clearing the login
+        // method matters as much as clearing the tokens: for an API-key login it
+        // holds the client secret, which the token handler would happily use to
+        // mint fresh tokens after logout.
+        sdk_session::clear_tokens(&self.sdk)
+            .await
+            .map_err(|e| AuthError::Other(format!("{e:#}")))?;
 
-        // Clear user-specific tokens using namespaced keys (set to null, don't remove)
-        // This matches TypeScript CLI behavior
-        storage
-            .set(
-                &StorageKey::UserAccessToken.format(Some(&user_id)),
-                &serde_json::Value::Null,
-            )
-            .await?;
-        storage
-            .set(
-                &StorageKey::UserRefreshToken.format(Some(&user_id)),
-                &serde_json::Value::Null,
-            )
-            .await?;
+        // Versions before tokens moved into SDK state wrote them to `data.json`.
+        // Nothing reads those keys any more, but a logout should not leave a
+        // usable refresh token behind, so scrub them for anyone upgrading.
+        self.scrub_legacy_tokens(&user_id).await?;
 
-        storage.flush().await?;
-        drop(storage);
-
-        // The sealed user key lives in SDK state now, so invalidating the
-        // session is what actually revokes vault access. Best-effort: logging
-        // out must still clear local tokens even if this fails.
+        // The sealed user key lives in SDK state too, so invalidating the
+        // session is what actually revokes vault access. Best-effort: the tokens
+        // are already gone by this point.
         if let Err(e) = sdk_session::invalidate_session(&self.sdk).await {
             debug!("Could not invalidate the session key during logout: {e:#}");
         }
@@ -621,17 +662,17 @@ impl AuthService {
     /// - `stateVersion`: 73 (if not already set)
     /// - `global_account_accounts`: account registry
     /// - `global_account_activeAccountId`: currently active user
-    /// - `user_{id}_token_accessToken`: access token
-    /// - `user_{id}_token_refreshToken`: refresh token
     /// - `user_{id}_crypto_userKey`: encrypted user key
     /// - `user_{id}_crypto_privateKey`: account private key (wrapped by the user key)
     /// - `user_{id}_kdf_config`: KDF configuration
+    ///
+    /// Tokens are deliberately absent: they belong to the SDK's state database
+    /// now (see [`sdk_session::persist_tokens`]), and writing them here too
+    /// would recreate the split token state that made refresh unreliable.
     async fn persist_auth_state(
         &self,
         user_id: &str,
         email: &str,
-        access_token: &str,
-        refresh_token: &str,
         encrypted_user_key: Option<&str>,
         private_key: Option<&str>,
         kdf_config: &KdfConfig,
@@ -652,20 +693,6 @@ impl AuthService {
 
         // Re-acquire storage lock
         let mut storage = self.storage.lock().await;
-
-        // Store tokens with user-namespaced keys
-        storage
-            .set(
-                &StorageKey::UserAccessToken.format(Some(user_id)),
-                &access_token.to_string(),
-            )
-            .await?;
-        storage
-            .set(
-                &StorageKey::UserRefreshToken.format(Some(user_id)),
-                &refresh_token.to_string(),
-            )
-            .await?;
 
         if let Some(key) = encrypted_user_key {
             // User key is already encrypted by the server with the master key
@@ -695,49 +722,42 @@ impl AuthService {
         Ok(())
     }
 
-    /// Persist API key authentication state (no KDF or user key)
+    /// Null out the `data.json` token keys written by pre-migration versions.
     ///
-    /// Uses TypeScript CLI compatible namespaced keys like `persist_auth_state`,
-    /// but without KDF config or user key (API key login doesn't provide these).
+    /// Set to null rather than removed, matching what the TypeScript CLI does
+    /// with these keys.
+    async fn scrub_legacy_tokens(&self, user_id: &str) -> Result<(), AuthError> {
+        let mut storage = self.storage.lock().await;
+
+        for key in [StorageKey::UserAccessToken, StorageKey::UserRefreshToken] {
+            storage
+                .set(&key.format(Some(user_id)), &serde_json::Value::Null)
+                .await?;
+        }
+
+        storage.flush().await?;
+        Ok(())
+    }
+
+    /// Register the account for an API-key login.
+    ///
+    /// API-key login provides no KDF config and no user key, and the tokens are
+    /// the SDK's, so all that is left here is the account registry.
     async fn persist_api_key_auth_state(
         &self,
         user_id: &str,
         email: &str,
-        access_token: &str,
-        refresh_token: &str,
     ) -> Result<(), AuthError> {
-        let mut storage = self.storage.lock().await;
+        {
+            let mut storage = self.storage.lock().await;
+            storage.ensure_state_version().await?;
+            storage.flush().await?;
+        }
 
-        // Ensure state version is set (for new storage files)
-        storage.ensure_state_version().await?;
-
-        // Register account in global accounts registry
-        drop(storage); // Release lock for account_manager
         self.account_manager
             .register_account(user_id, email)
             .await?;
-
-        // Set as active account
         self.account_manager.set_active_user_id(user_id).await?;
-
-        // Re-acquire storage lock
-        let mut storage = self.storage.lock().await;
-
-        // Store tokens with user-namespaced keys
-        storage
-            .set(
-                &StorageKey::UserAccessToken.format(Some(user_id)),
-                &access_token.to_string(),
-            )
-            .await?;
-        storage
-            .set(
-                &StorageKey::UserRefreshToken.format(Some(user_id)),
-                &refresh_token.to_string(),
-            )
-            .await?;
-
-        storage.flush().await?;
 
         Ok(())
     }

@@ -27,7 +27,6 @@ pub async fn execute_sync(
 
     // Create vault service
     let vault_service = VaultService::new(
-        ctx.api_client(),
         ctx.storage(),
         Arc::new(ctx.sdk().clone()),
         account_manager,

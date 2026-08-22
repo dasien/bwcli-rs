@@ -6,9 +6,11 @@
 //! - `--force` was ignored (the `force` parameter was `_force`), and every
 //!   invocation performed a full download regardless of server state
 
+use bitwarden_core::client::login_method::UserLoginMethod;
+use bitwarden_crypto::Kdf;
 use bw_core::models::vault::Organization;
-use bw_core::services::api::{BitwardenApiClient, Environment, StoredAccessToken};
-use bw_core::services::create_sdk_client_with_tokens;
+use bw_core::services::create_sdk_client_with_state;
+use bw_core::services::sdk_session;
 use bw_core::services::storage::{JsonFileStorage, Storage, StorageKey};
 use bw_core::services::vault::SyncService;
 use std::collections::HashMap;
@@ -70,15 +72,6 @@ async fn setup(
         .await
         .unwrap();
 
-    // `is_authenticated` only checks for a stored access token.
-    storage
-        .set(
-            &StorageKey::UserAccessToken.format(Some(TEST_USER_ID)),
-            &"fake-access-token".to_string(),
-        )
-        .await
-        .unwrap();
-
     if let Some(ts) = last_sync {
         storage
             .set(
@@ -92,25 +85,39 @@ async fn setup(
     storage.flush().await.unwrap();
 
     let storage = Arc::new(Mutex::new(storage));
-    let environment = Environment::from_base_url(&server.uri()).unwrap();
-    let api_client = Arc::new(
-        BitwardenApiClient::new(environment, Arc::clone(&storage), None).unwrap(),
-    );
 
-    // Sync now talks to the server through the SDK's generated API clients, so
-    // the SDK client must point at the mock server and carry our stored token.
-    // (`https_only` is only enforced in release builds, so http:// works here.)
+    // Sync talks to the server through the SDK's generated API clients, so the
+    // SDK client must point at the mock server and hold a token in its own
+    // state. (`https_only` is only enforced in release builds, so http:// works
+    // here.)
     let sdk = Arc::new(
-        create_sdk_client_with_tokens(
+        create_sdk_client_with_state(
             Some(server.uri()),
             Some(server.uri()),
-            Arc::new(StoredAccessToken::new(Arc::clone(&api_client))),
+            temp_dir.path().to_path_buf(),
         )
+        .await
         .unwrap(),
     );
 
+    // Far-future expiry, so the token handler attaches this token rather than
+    // trying to renew it against the mock server.
+    sdk_session::persist_tokens(
+        &sdk,
+        UserLoginMethod::Username {
+            client_id: "cli".to_string(),
+            email: "test@example.com".to_string(),
+            kdf: Kdf::default_pbkdf2(),
+        },
+        "fake-access-token",
+        Some("fake-refresh-token"),
+        3600,
+    )
+    .await
+    .unwrap();
+
     (
-        SyncService::new(api_client, Arc::clone(&storage), sdk),
+        SyncService::new(Arc::clone(&storage), sdk),
         storage,
         temp_dir,
     )
