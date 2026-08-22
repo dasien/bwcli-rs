@@ -153,6 +153,44 @@ Ordered so correctness work lands on a green build, before the large migration.
   went to stderr only. It now carries `first_error`, so single-line and
   `--response` JSON consumers get something actionable.
 
+## Found by live testing against a real vault (2026-08-22)
+
+The whole suite passed while three of these were broken. Nothing that existed
+could have caught them, because no test crossed the network.
+
+- **`bw login` failed for everyone.** The server renamed
+  `ResetMasterPassword` to `ForcePasswordReset`; our required `bool` made serde
+  reject the entire token response. The field is read nowhere. Now aliased and
+  defaulted, along with `expires_in`/`token_type` — informational fields must
+  not be able to fail a login. `Kdf`/`KdfIterations` are deliberately still
+  required: defaulting them risks silently deriving a wrong key.
+- **Writes succeeded but reported failure.** `write_service` deserialized
+  POST/PUT responses straight into `Cipher`, which is `deny_unknown_fields` and
+  rejects the server's `object` field. `bw create item` created the item, told
+  the user it failed, and skipped the cache update. Five sites; all now go
+  through the tolerant generated response models plus the SDK's `TryFrom`.
+- **`bw edit item` and `bw move` could never have worked.** `update_cipher` set
+  `revision_date = now()` before encrypting, but `CipherRequestModel` derives
+  `lastKnownRevisionDate` from it and the server uses that for optimistic
+  concurrency, so every edit was rejected as "out of date". The server owns
+  that field; we no longer touch it.
+- **The error handler hid the above.** `extract_error_message` deserialized into
+  a struct whose fields are all `Option`, so parsing always succeeded and the
+  `"Unknown error"` default was returned, making the raw-body fallback
+  unreachable. It also didn't know about `validationErrors`. Split into a pure
+  `describe_error_body` with 6 tests.
+
+Common thread: hand-rolled API models and error handling drift from the server
+and no test can catch it. Argues for phase 8 (`bitwarden-auth`) and for the
+generated API clients, which are tolerant by construction.
+
+**Verified live:** login, sync, `--force` bypass, revision-date skip, decrypted
+`list items`, `--search`, exact-vs-ambiguous `get item`, `get password`,
+folders, all three export formats, org-export refusal, and
+create/edit/delete/restore round-trips. Organizations and sends now persist,
+but both were empty in the test vault, so their *parsing* paths remain
+unexercised.
+
 ## Do not adopt
 
 - **`bitwarden-sensitive-value`** — does not zeroize, serializes transparently.

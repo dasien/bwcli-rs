@@ -29,3 +29,12 @@ Thumbs.db
 
 #CMAT
 .claude
+
+# Bitwarden CLI local state — NEVER commit.
+# storage/path.rs resolves appdata to ./bw-data when it exists, so running the
+# binary from the repo root drops data.json here. That file holds access and
+# refresh tokens plus the session-sealed user key.
+bw-data/
+data.json
+__PROTECTED__*
+*.bwsession

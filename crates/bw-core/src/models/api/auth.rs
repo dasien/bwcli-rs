@@ -92,12 +92,18 @@ pub struct ApiKeyLoginRequest {
 pub struct LoginResponse {
     /// Access token (JWT)
     pub access_token: String,
-    /// Token expiry in seconds (typically 3600 = 1 hour)
-    pub expires_in: i64,
-    /// Token type ("Bearer")
-    pub token_type: String,
     /// Refresh token
     pub refresh_token: String,
+
+    /// Token expiry in seconds (typically 3600 = 1 hour)
+    ///
+    /// Defaulted: informational only, and a missing value must not be able to
+    /// fail a login.
+    #[serde(default)]
+    pub expires_in: i64,
+    /// Token type ("Bearer")
+    #[serde(default)]
+    pub token_type: String,
 
     /// Encrypted user key (EncString format)
     /// Note: Capital 'K' in response
@@ -121,9 +127,19 @@ pub struct LoginResponse {
     #[serde(rename = "KdfParallelism")]
     pub kdf_parallelism: Option<u32>,
 
-    /// Master password reset required
-    #[serde(rename = "ResetMasterPassword")]
-    pub reset_master_password: bool,
+    /// Whether the user must reset their master password.
+    ///
+    /// The server renamed this from `ResetMasterPassword` to
+    /// `ForcePasswordReset`; the old name is kept as an alias for older
+    /// self-hosted servers. Defaulted because it is purely informational — the
+    /// rename alone was enough to make every login fail with an opaque
+    /// "error decoding response body".
+    #[serde(
+        rename = "ForcePasswordReset",
+        alias = "ResetMasterPassword",
+        default
+    )]
+    pub force_password_reset: bool,
 
     /// Available 2FA providers (if 2FA required)
     #[serde(rename = "TwoFactorProviders")]
@@ -157,6 +173,77 @@ pub struct ProfileResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The exact top-level field set returned by identity.bitwarden.com as of
+    /// 2026-08. Regression guard: this response previously failed to parse
+    /// because the model required `ResetMasterPassword`, which the server had
+    /// renamed to `ForcePasswordReset` — breaking every login with an opaque
+    /// "error decoding response body".
+    #[test]
+    fn parses_the_current_server_login_response() {
+        let body = serde_json::json!({
+            "access_token": "jwt-here",
+            "refresh_token": "refresh-here",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "scope": "api offline_access",
+            "Key": "2.abc|def|ghi",
+            "PrivateKey": "2.jkl|mno|pqr",
+            "Kdf": 0,
+            "KdfIterations": 600000,
+            "KdfMemory": serde_json::Value::Null,
+            "KdfParallelism": serde_json::Value::Null,
+            "ForcePasswordReset": false,
+            "MasterPasswordPolicy": serde_json::Value::Null,
+            "UserDecryptionOptions": {"HasMasterPassword": true},
+            "AccountKeys": {"publicKeyEncryptionKeyPair": serde_json::Value::Null},
+        })
+        .to_string();
+
+        let parsed: LoginResponse =
+            serde_json::from_str(&body).expect("current server response must parse");
+
+        assert_eq!(parsed.access_token, "jwt-here");
+        assert_eq!(parsed.refresh_token, "refresh-here");
+        assert_eq!(parsed.key.as_deref(), Some("2.abc|def|ghi"));
+        assert_eq!(parsed.private_key.as_deref(), Some("2.jkl|mno|pqr"));
+        assert_eq!(parsed.kdf, 0);
+        assert_eq!(parsed.kdf_iterations, 600_000);
+        assert!(!parsed.force_password_reset);
+    }
+
+    /// Older self-hosted servers still send the pre-rename field name.
+    #[test]
+    fn accepts_the_legacy_reset_master_password_name() {
+        let body = serde_json::json!({
+            "access_token": "a",
+            "refresh_token": "r",
+            "Kdf": 0,
+            "KdfIterations": 600000,
+            "ResetMasterPassword": true,
+        })
+        .to_string();
+
+        let parsed: LoginResponse = serde_json::from_str(&body).unwrap();
+        assert!(parsed.force_password_reset);
+    }
+
+    /// Informational fields must never be able to fail a login.
+    #[test]
+    fn tolerates_missing_optional_fields() {
+        let body = serde_json::json!({
+            "access_token": "a",
+            "refresh_token": "r",
+            "Kdf": 0,
+            "KdfIterations": 600000,
+        })
+        .to_string();
+
+        let parsed: LoginResponse = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.expires_in, 0);
+        assert_eq!(parsed.token_type, "");
+        assert!(!parsed.force_password_reset);
+    }
 
     #[test]
     fn test_password_login_request_form_encoding() {

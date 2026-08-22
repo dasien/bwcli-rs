@@ -199,29 +199,8 @@ impl BitwardenApiClient {
 
     /// Extract error message from response body
     async fn extract_error_message(&self, response: Response) -> Result<String> {
-        // Try to parse Bitwarden error response format
-        #[derive(Deserialize)]
-        struct ErrorResponse {
-            #[serde(rename = "Message")]
-            message: Option<String>,
-            #[serde(rename = "error")]
-            error: Option<String>,
-            #[serde(rename = "error_description")]
-            error_description: Option<String>,
-        }
-
         let text = response.text().await?;
-
-        if let Ok(err_response) = serde_json::from_str::<ErrorResponse>(&text) {
-            return Ok(err_response
-                .message
-                .or(err_response.error_description)
-                .or(err_response.error)
-                .unwrap_or_else(|| "Unknown error".to_string()));
-        }
-
-        // Fallback to raw text
-        Ok(text)
+        Ok(describe_error_body(&text))
     }
 
     /// Post token refresh request (special handling for identity endpoint)
@@ -237,9 +216,7 @@ impl BitwardenApiClient {
             .await?;
 
         let response = self.process_response(response).await?;
-        let token_response: TokenResponse = response.json().await?;
-
-        Ok(token_response)
+        deserialize_response(response, &url).await
     }
 
     /// Post form-encoded data (for OAuth2 endpoints)
@@ -288,9 +265,7 @@ impl BitwardenApiClient {
         let request = request_builder.build()?;
 
         let response = self.execute_with_retry(request, false).await?;
-        let data: R = response.json().await?;
-
-        Ok(data)
+        deserialize_response(response, &url).await
     }
 
     /// Post JSON to identity server endpoint
@@ -313,9 +288,7 @@ impl BitwardenApiClient {
             .build()?;
 
         let response = self.execute_with_retry(request, false).await?;
-        let data: R = response.json().await?;
-
-        Ok(data)
+        deserialize_response(response, &url).await
     }
 
     /// Post form-encoded data to identity server endpoint
@@ -339,9 +312,7 @@ impl BitwardenApiClient {
             .build()?;
 
         let response = self.execute_with_retry(request, false).await?;
-        let data: R = response.json().await?;
-
-        Ok(data)
+        deserialize_response(response, &url).await
     }
 
     /// GET with explicit authorization token
@@ -364,9 +335,7 @@ impl BitwardenApiClient {
             .build()?;
 
         let response = self.execute_with_retry(request, false).await?;
-        let data: R = response.json().await?;
-
-        Ok(data)
+        deserialize_response(response, &url).await
     }
 }
 
@@ -380,9 +349,7 @@ impl ApiClient for BitwardenApiClient {
         let request = self.http_client.get(&url).build()?;
 
         let response = self.execute_with_retry(request, false).await?;
-        let data: T = response.json().await?;
-
-        Ok(data)
+        deserialize_response(response, &url).await
     }
 
     async fn get_with_auth<T>(&self, path: &str) -> Result<T>
@@ -448,9 +415,7 @@ impl ApiClient for BitwardenApiClient {
             .build()?;
 
         let response = self.execute_with_retry(request, false).await?;
-        let data: R = response.json().await?;
-
-        Ok(data)
+        deserialize_response(response, &url).await
     }
 
     async fn post_with_auth<T, R>(&self, path: &str, body: &T) -> Result<R>
@@ -481,9 +446,7 @@ impl ApiClient for BitwardenApiClient {
             .build()?;
 
         let response = self.execute_with_retry(request, true).await?;
-        let data: R = response.json().await?;
-
-        Ok(data)
+        deserialize_response(response, &url).await
     }
 
     async fn put_with_auth<T, R>(&self, path: &str, body: &T) -> Result<R>
@@ -514,9 +477,7 @@ impl ApiClient for BitwardenApiClient {
             .build()?;
 
         let response = self.execute_with_retry(request, true).await?;
-        let data: R = response.json().await?;
-
-        Ok(data)
+        deserialize_response(response, &url).await
     }
 
     async fn put_with_auth_no_response(&self, path: &str) -> Result<()> {
@@ -582,5 +543,164 @@ impl ApiClient for BitwardenApiClient {
             .ok()
             .flatten()
             .is_some()
+    }
+}
+
+/// Deserialize a response body, and on failure describe the *shape* mismatch.
+///
+/// `reqwest`'s `Response::json` collapses every parse problem into "error
+/// decoding response body", which says nothing about which field is wrong. That
+/// matters most on `/connect/token`, where our hand-written response models can
+/// drift from the server.
+///
+/// The body is deliberately never included in the error: token responses carry
+/// access and refresh tokens. Only the serde message and the set of top-level
+/// field *names* are reported.
+async fn deserialize_response<R>(response: Response, url: &str) -> Result<R>
+where
+    R: for<'de> Deserialize<'de>,
+{
+    let body = response.text().await?;
+
+    match serde_json::from_str::<R>(&body) {
+        Ok(data) => Ok(data),
+        Err(e) => {
+            let shape = match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(serde_json::Value::Object(map)) => {
+                    let mut names: Vec<&str> = map.keys().map(String::as_str).collect();
+                    names.sort_unstable();
+                    format!("server sent fields: [{}]", names.join(", "))
+                }
+                Ok(other) => format!(
+                    "server sent a JSON {} rather than an object",
+                    match other {
+                        serde_json::Value::Null => "null",
+                        serde_json::Value::Bool(_) => "boolean",
+                        serde_json::Value::Number(_) => "number",
+                        serde_json::Value::String(_) => "string",
+                        serde_json::Value::Array(_) => "array",
+                        serde_json::Value::Object(_) => unreachable!(),
+                    }
+                ),
+                Err(_) => format!("body was not valid JSON ({} bytes)", body.len()),
+            };
+
+            Err(anyhow::anyhow!(
+                "could not parse the response from {url}: {e}; {shape}"
+            ))
+        }
+    }
+}
+
+/// Turn an error response body into a human-readable message.
+///
+/// A free function so the parsing rules are unit-testable without a live
+/// HTTP response.
+fn describe_error_body(text: &str) -> String {
+    // Every field is optional, so `from_str` succeeds even for a body that
+    // contains none of them. That previously meant an "Unknown error" default
+    // was returned and the raw-body fallback was unreachable, hiding the
+    // server's actual complaint on every 400.
+    #[derive(Deserialize)]
+    struct ErrorResponse {
+        #[serde(rename = "Message", alias = "message")]
+        message: Option<String>,
+        #[serde(rename = "error")]
+        error: Option<String>,
+        #[serde(rename = "error_description")]
+        error_description: Option<String>,
+        /// Per-field validation failures, which is what the API returns for
+        /// most 400s.
+        #[serde(rename = "validationErrors", alias = "ValidationErrors")]
+        validation_errors: Option<std::collections::HashMap<String, Vec<String>>>,
+    }
+
+    if let Ok(err) = serde_json::from_str::<ErrorResponse>(text) {
+        let validation = err.validation_errors.and_then(|map| {
+            let mut parts: Vec<String> = map
+                .into_iter()
+                .map(|(field, msgs)| {
+                    if field.is_empty() {
+                        msgs.join("; ")
+                    } else {
+                        format!("{field}: {}", msgs.join("; "))
+                    }
+                })
+                .collect();
+            parts.sort();
+            (!parts.is_empty()).then(|| parts.join(" | "))
+        });
+
+        if let Some(message) = err
+            .message
+            .or(err.error_description)
+            .or(err.error)
+            .or(validation)
+        {
+            return message;
+        }
+    }
+
+    // Nothing recognizable: report the body so the failure is diagnosable
+    // rather than an opaque "Unknown error".
+    let text = text.trim();
+    if text.is_empty() {
+        return "empty response body".to_string();
+    }
+
+    const MAX: usize = 500;
+    if text.len() > MAX {
+        format!("unrecognized error body: {}\u{2026}", &text[..MAX])
+    } else {
+        format!("unrecognized error body: {text}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe_error_body;
+
+    #[test]
+    fn prefers_the_message_field() {
+        let body = r#"{"Message":"The item cannot be saved because it is out of date."}"#;
+        assert_eq!(
+            describe_error_body(body),
+            "The item cannot be saved because it is out of date."
+        );
+    }
+
+    #[test]
+    fn reports_validation_errors() {
+        let body = r#"{"validationErrors":{"Name":["Name is required."]}}"#;
+        assert_eq!(describe_error_body(body), "Name: Name is required.");
+    }
+
+    #[test]
+    fn reports_unkeyed_validation_errors() {
+        let body = r#"{"validationErrors":{"":["Something is wrong."]}}"#;
+        assert_eq!(describe_error_body(body), "Something is wrong.");
+    }
+
+    #[test]
+    fn falls_back_to_the_oauth_error_fields() {
+        let body = r#"{"error":"invalid_grant","error_description":"bad refresh token"}"#;
+        assert_eq!(describe_error_body(body), "bad refresh token");
+    }
+
+    /// Regression: a JSON object with none of the known fields used to parse
+    /// successfully into an all-`None` struct and report "Unknown error",
+    /// hiding what the server actually said.
+    #[test]
+    fn surfaces_bodies_with_no_recognized_fields() {
+        let body = r#"{"somethingElse":"details here"}"#;
+        let msg = describe_error_body(body);
+        assert!(msg.contains("details here"), "got: {msg}");
+        assert!(!msg.contains("Unknown error"));
+    }
+
+    #[test]
+    fn handles_non_json_and_empty_bodies() {
+        assert!(describe_error_body("<html>502</html>").contains("502"));
+        assert_eq!(describe_error_body("   "), "empty response body");
     }
 }

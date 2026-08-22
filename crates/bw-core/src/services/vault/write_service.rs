@@ -12,6 +12,7 @@ use crate::models::vault::{
 };
 use crate::services::api::{ApiClient, BitwardenApiClient, endpoints};
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
+use bitwarden_api_api::models::{CipherDetailsResponseModel, FolderResponseModel};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -85,11 +86,12 @@ impl WriteService {
         let request: CipherRequestModel = encryption_context.into();
 
         // 6. Send to API
-        let created: Cipher = self
+        let response: CipherDetailsResponseModel = self
             .api_client
             .post_with_auth(endpoints::api::ciphers::BASE, &request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
+        let created = cipher_from_response(response)?;
 
         // 7. Update local cache
         self.add_cipher_to_cache(&created).await?;
@@ -117,8 +119,14 @@ impl WriteService {
         self.validation_service
             .validate_cipher_update(&cipher_view)?;
 
-        // 4. Update timestamp
-        cipher_view.revision_date = Utc::now();
+        // 4. Do NOT touch revision_date.
+        //
+        // The server uses it for optimistic concurrency: `CipherRequestModel`
+        // derives `lastKnownRevisionDate` from this field, and the write is
+        // rejected with "the item cannot be saved because it is out of date"
+        // unless it matches what the server holds. Setting it to `now` here
+        // made every edit fail. The server assigns the new revision date and
+        // returns it.
 
         // 5. Encrypt using SDK
         let encryption_context = self.cipher_service.encrypt_cipher(cipher_view).await?;
@@ -127,11 +135,12 @@ impl WriteService {
         let request: CipherRequestModel = encryption_context.into();
 
         // 7. Send to API
-        let updated: Cipher = self
+        let response: CipherDetailsResponseModel = self
             .api_client
             .put_with_auth(&endpoints::api::ciphers::by_id(id), &request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
+        let updated = cipher_from_response(response)?;
 
         // 8. Update cache
         self.update_cipher_in_cache(&updated).await?;
@@ -185,7 +194,7 @@ impl WriteService {
         self.validate_cipher_deleted(id).await?;
 
         // 2. Send restore to API
-        let restored: Cipher = self
+        let restored: CipherDetailsResponseModel = self
             .api_client
             .put_with_auth(
                 &endpoints::api::ciphers::restore(id),
@@ -193,6 +202,7 @@ impl WriteService {
             )
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
+        let restored = cipher_from_response(restored)?;
 
         // 3. Update cache
         self.update_cipher_in_cache(&restored).await?;
@@ -257,11 +267,12 @@ impl WriteService {
         };
 
         // 4. Send to API
-        let created: Folder = self
+        let created: FolderResponseModel = self
             .api_client
             .post_with_auth(endpoints::api::folders::BASE, &folder_request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
+        let created = folder_from_response(created)?;
 
         // 5. Update cache
         self.add_folder_to_cache(&created).await?;
@@ -301,11 +312,12 @@ impl WriteService {
         };
 
         // 6. Send to API
-        let updated: Folder = self
+        let updated: FolderResponseModel = self
             .api_client
             .put_with_auth(&endpoints::api::folders::by_id(id), &folder_request)
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))?;
+        let updated = folder_from_response(updated)?;
 
         // 7. Update cache
         self.update_folder_in_cache(&updated).await?;
@@ -605,4 +617,23 @@ impl WriteService {
 
         ciphers.get(id).cloned().ok_or(VaultError::ItemNotFound)
     }
+}
+
+/// Convert a cipher write response into a domain `Cipher`.
+///
+/// The API response must not be deserialized straight into `Cipher`: that type
+/// is `deny_unknown_fields`, and the server includes fields it does not model
+/// (`object`, among others). Doing so made `create`/`edit`/`restore` fail
+/// *after* the server had already applied the change — the item was written,
+/// the user saw an error, and the local cache was never updated.
+fn cipher_from_response(response: CipherDetailsResponseModel) -> Result<Cipher, VaultError> {
+    Cipher::try_from(response)
+        .map_err(|e| VaultError::ApiError(format!("could not read the cipher the server returned: {e}")))
+}
+
+/// Convert a folder write response into a domain `Folder`. See
+/// [`cipher_from_response`].
+fn folder_from_response(response: FolderResponseModel) -> Result<Folder, VaultError> {
+    Folder::try_from(response)
+        .map_err(|e| VaultError::ApiError(format!("could not read the folder the server returned: {e}")))
 }
