@@ -226,9 +226,28 @@ Not worth doing, with reasons:
 - **`services/api/environment.rs`.** No SDK equivalent; `ClientSettings` models
   only `api_url`/`identity_url`, not icons/notifications/events/web-vault.
 
-Still to do: `bitwarden-auth` `login_via_password` (no 2FA or API-key support,
-so the hand-rolled path has to stay for those), and replacing
-`services/crypto.rs` with `MasterPasswordAuthenticationData::derive`.
+Investigated and deliberately **not** done — both would be worse than what we
+have:
+
+- **`bitwarden-auth` `login_via_password`.** Verified against `origin/main`:
+  `LoginResponse` has only an `Authenticated` variant (`TwoFactorRequired` is
+  commented out, new-device verification is a TODO), `LoginApiRequest::new`
+  hardcodes the three `two_factor_*` fields to `None` with no way to set them,
+  and `client_credentials` appears nowhere in the crate. So it cannot do 2FA,
+  new-device verification, or API-key login — all of which this CLI supports.
+  Worse than merely lacking them: a 2FA-enabled account gets a two-factor
+  challenge that `LoginResponse` *cannot represent*, so routing login through it
+  would actively break those accounts. Revisit when the variant is uncommented.
+- **`services/crypto.rs` -> `MasterPasswordAuthenticationData::derive`.** The
+  file is already pure SDK delegation — three one-line calls into
+  `bitwarden-crypto`, no custom crypto (its own header says so). The SDK helper
+  does not return the `MasterKey`, which we still need to decrypt the user key,
+  so adopting it would run PBKDF2 twice per login (600k iterations each).
+  The one real prize would have been correct salt handling — the SDK notes salt
+  can differ from email — but the live server returns no salt: both
+  `POST /accounts/prelogin` and `POST /accounts/prelogin/password` answer
+  `{kdf, kdfIterations, kdfMemory, kdfParallelism}` and nothing else. Email-as-
+  salt is what is actually available.
 
 ## Do not adopt
 
