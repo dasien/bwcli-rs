@@ -9,6 +9,7 @@ use crate::models::vault::{
 use crate::services::api::BitwardenApiClient;
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
 use bitwarden_core::Client;
+use bitwarden_vault::VaultClientExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -42,6 +43,7 @@ pub enum FieldType {
 
 /// Main vault service coordinating all vault operations
 pub struct VaultService {
+    sdk: Arc<Client>,
     sync_service: SyncService,
     cipher_service: CipherService,
     search_service: SearchService,
@@ -63,11 +65,12 @@ impl VaultService {
             Arc::clone(&storage),
             Arc::clone(&sdk_client),
         );
-        let cipher_service = CipherService::new(sdk_client);
+        let cipher_service = CipherService::new(Arc::clone(&sdk_client));
         let search_service = SearchService::new();
         let totp_service = TotpService::new();
 
         Self {
+            sdk: sdk_client,
             sync_service,
             cipher_service,
             search_service,
@@ -103,16 +106,25 @@ impl VaultService {
         filters: &ItemFilters,
         _session: &str,
     ) -> Result<Vec<CipherListView>, VaultError> {
-        let ciphers = self.get_ciphers().await?;
+        // Ciphers come from the SDK's state repository, already decrypted.
+        let result = self
+            .sdk
+            .vault()
+            .ciphers()
+            .list()
+            .await
+            .map_err(|e| VaultError::DecryptionError(e.to_string()))?;
 
-        // Filters expressible on encrypted metadata first, so we decrypt as
-        // little as possible.
-        let filtered = self.search_service.filter_ciphers(&ciphers, filters);
-        let cipher_vec: Vec<Cipher> = filtered.into_values().collect();
-        let decrypted = self.cipher_service.decrypt_ciphers(cipher_vec).await?;
+        // Report per-item decryption failures rather than silently dropping
+        // them: a partial list that looks complete is worse than a warning.
+        if !result.failures.is_empty() {
+            tracing::warn!(
+                "{} item(s) could not be decrypted and were omitted",
+                result.failures.len()
+            );
+        }
 
-        // `--search` and `--url` need plaintext, so they apply after.
-        Ok(self.search_service.filter_decrypted(decrypted, filters))
+        Ok(self.search_service.filter_items(result.successes, filters))
     }
 
     /// List all folders
@@ -190,32 +202,35 @@ impl VaultService {
         id_or_search: &str,
         _session: &str,
     ) -> Result<CipherView, VaultError> {
-        let ciphers = self.get_ciphers().await?;
+        let ciphers = self.sdk.vault().ciphers();
 
-        // Fast path: exact id lookup needs no decryption.
-        if let Some(cipher) = ciphers.get(id_or_search) {
-            return self.cipher_service.decrypt_cipher(cipher.clone()).await;
+        // Fast path: a real id needs no search.
+        if let Ok(view) = ciphers.get(id_or_search).await {
+            return Ok(view);
         }
 
-        // Otherwise names are encrypted, so searching requires decrypting.
-        let candidates: Vec<Cipher> = ciphers
-            .values()
-            .filter(|c| c.deleted_date.is_none())
-            .cloned()
-            .collect();
-        let list = self.cipher_service.decrypt_ciphers(candidates).await?;
+        // Otherwise resolve by name over the decrypted list.
+        let list = ciphers
+            .list()
+            .await
+            .map_err(|e| VaultError::DecryptionError(e.to_string()))?;
 
-        let mut matches = self.search_service.find_by_name(&list, id_or_search);
+        let candidates: Vec<_> = list
+            .successes
+            .into_iter()
+            .filter(|c| c.deleted_date.is_none())
+            .collect();
+
+        let mut matches = self.search_service.find_by_name(&candidates, id_or_search);
 
         match matches.len() {
             0 => Err(VaultError::ItemNotFound),
             1 => {
                 let (id, _) = matches.remove(0);
-                let cipher = ciphers
+                ciphers
                     .get(&id.to_string())
-                    .ok_or(VaultError::ItemNotFound)?
-                    .clone();
-                self.cipher_service.decrypt_cipher(cipher).await
+                    .await
+                    .map_err(|_| VaultError::ItemNotFound)
             }
             // Returning an arbitrary match would silently hand back the wrong
             // secret (`bw get password <name>`), so make the caller disambiguate.

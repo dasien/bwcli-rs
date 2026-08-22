@@ -135,7 +135,29 @@ pub async fn unlock_with_session(client: &Client, session: &str) -> Result<()> {
         .unlock()
         .unlock(UnlockMethod::SessionKey(key))
         .await
-        .context("could not unlock the vault with the provided session key")
+        .context("could not unlock the vault with the provided session key")?;
+
+    // `UnlockClient::unlock` restores the keys but does not set the client's
+    // user id — only `initialize_user_crypto` and `load_from_state` do. Without
+    // it, decryption works but *encryption* fails with "Client User Id has not
+    // been set", because an EncryptionContext records who encrypted the item.
+    // So creates and edits would break while reads looked fine.
+    let user_id = client
+        .platform()
+        .state()
+        .setting(USER_ID)
+        .context("no user_id setting")?
+        .get()
+        .await
+        .context("could not read the stored user id")?
+        .ok_or_else(|| anyhow::anyhow!("no user id in state; run 'bw login' again"))?;
+
+    // Already-set is fine: the same process may have initialized crypto directly.
+    if let Err(e) = client.internal.init_user_id(user_id).await {
+        tracing::debug!("User id was already set: {e}");
+    }
+
+    Ok(())
 }
 
 /// Invalidate the stored session key, i.e. `bw lock`.

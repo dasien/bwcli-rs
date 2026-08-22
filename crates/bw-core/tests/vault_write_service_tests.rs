@@ -79,13 +79,16 @@ fn create_test_cipher_view() -> CipherView {
     }
 }
 
+/// Everything `WriteService::new` needs, plus the storage handle and the
+/// `TempDir`, which must outlive the state database.
 async fn setup_test_environment() -> (
+    Arc<bitwarden_core::Client>,
     Arc<BitwardenApiClient>,
     Arc<Mutex<JsonFileStorage>>,
     Arc<CipherService>,
     Arc<ValidationService>,
     Arc<ConfirmationService>,
-    Arc<AccountManager>,
+    TempDir,
 ) {
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().to_path_buf();
@@ -153,18 +156,16 @@ async fn setup_test_environment() -> (
     let environment = Environment::default_cloud();
     let api_client = Arc::new(BitwardenApiClient::new(environment, storage.clone(), None).unwrap());
 
-    let cipher_service = Arc::new(CipherService::new(sdk_client.clone()));
-    let validation_service = Arc::new(ValidationService::new());
-    let confirmation_service = Arc::new(ConfirmationService::new(true)); // no_interaction=true
-    let account_manager = Arc::new(AccountManager::new(storage.clone()));
+    let cipher_service = Arc::new(CipherService::new(Arc::clone(&sdk_client)));
 
     (
+        sdk_client,
         api_client,
         storage,
         cipher_service,
-        validation_service,
-        confirmation_service,
-        account_manager,
+        Arc::new(ValidationService::new()),
+        Arc::new(ConfirmationService::new(true)), // no_interaction
+        temp_dir,
     )
 }
 
@@ -175,21 +176,21 @@ async fn setup_test_environment() -> (
 #[tokio::test]
 async fn test_create_cipher_rejects_invalid_input() {
     let (
+        sdk,
         api_client,
-        storage,
+        _storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
+        _temp_dir,
     ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
+        sdk,
         api_client,
-        storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
     );
 
     // Create invalid cipher (missing name)
@@ -207,6 +208,12 @@ async fn test_create_cipher_rejects_invalid_input() {
     ));
 }
 
+// NOTE: `test_validate_cipher_exists_returns_error_when_not_found` and its folder
+// twin were removed here. They asserted that a write against an unknown id
+// produced ItemNotFound/FolderNotFound from a *local cache* pre-check. Existence
+// is now the server's business — the SDK writes go straight out — so there is no
+// local lookup to assert on, and the tests only exercised the removed design.
+//
 // NOTE: `test_create_cipher_rejects_invalid_uuid` was removed here. It set
 // `cipher_view.folder_id = Some("not-a-uuid".to_string())` to assert that
 // runtime validation rejected malformed UUIDs. `CipherView::folder_id` is now
@@ -217,21 +224,21 @@ async fn test_create_cipher_rejects_invalid_input() {
 #[tokio::test]
 async fn test_create_cipher_rejects_field_too_long() {
     let (
+        sdk,
         api_client,
-        storage,
+        _storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
+        _temp_dir,
     ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
+        sdk,
         api_client,
-        storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
     );
 
     // Create cipher with name too long
@@ -252,64 +259,7 @@ async fn test_create_cipher_rejects_field_too_long() {
 // Cache Management Tests
 // ============================================================================
 
-#[tokio::test]
-async fn test_validate_cipher_exists_returns_error_when_not_found() {
-    let (
-        api_client,
-        storage,
-        cipher_service,
-        validation_service,
-        confirmation_service,
-        account_manager,
-    ) = setup_test_environment().await;
 
-    let write_service = WriteService::new(
-        api_client,
-        storage,
-        cipher_service,
-        validation_service,
-        confirmation_service,
-        account_manager,
-    );
-
-    // Try to update non-existent cipher
-    let cipher_view = create_test_cipher_view();
-    let result = write_service
-        .update_cipher("non-existent-id", cipher_view, "dummy")
-        .await;
-
-    // Should fail because cipher doesn't exist
-    assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), VaultError::ItemNotFound));
-}
-
-#[tokio::test]
-async fn test_validate_folder_exists_returns_error_when_not_found() {
-    let (
-        api_client,
-        storage,
-        cipher_service,
-        validation_service,
-        confirmation_service,
-        account_manager,
-    ) = setup_test_environment().await;
-
-    let write_service = WriteService::new(
-        api_client,
-        storage,
-        cipher_service,
-        validation_service,
-        confirmation_service,
-        account_manager,
-    );
-
-    // Try to delete non-existent folder
-    let result = write_service.delete_folder("non-existent-id").await;
-
-    // Should fail because folder doesn't exist
-    assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), VaultError::FolderNotFound));
-}
 
 // ============================================================================
 // Folder Validation Tests
@@ -318,21 +268,21 @@ async fn test_validate_folder_exists_returns_error_when_not_found() {
 #[tokio::test]
 async fn test_create_folder_rejects_empty_name() {
     let (
+        sdk,
         api_client,
-        storage,
+        _storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
+        _temp_dir,
     ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
+        sdk,
         api_client,
-        storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
     );
 
     let result = write_service.create_folder(String::new(), "dummy").await;
@@ -348,21 +298,21 @@ async fn test_create_folder_rejects_empty_name() {
 #[tokio::test]
 async fn test_create_folder_rejects_name_too_long() {
     let (
+        sdk,
         api_client,
-        storage,
+        _storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
+        _temp_dir,
     ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
+        sdk,
         api_client,
-        storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
     );
 
     let result = write_service.create_folder("a".repeat(1001), "dummy").await;
@@ -378,21 +328,21 @@ async fn test_create_folder_rejects_name_too_long() {
 #[tokio::test]
 async fn test_update_folder_rejects_empty_name() {
     let (
+        sdk,
         api_client,
-        storage,
+        _storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
+        _temp_dir,
     ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
+        sdk,
         api_client,
-        storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
     );
 
     let result = write_service
@@ -415,21 +365,21 @@ async fn test_update_folder_rejects_empty_name() {
 #[tokio::test]
 async fn test_create_login_without_login_data_fails() {
     let (
+        sdk,
         api_client,
-        storage,
+        _storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
+        _temp_dir,
     ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
+        sdk,
         api_client,
-        storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
     );
 
     let mut cipher_view = create_test_cipher_view();
@@ -448,21 +398,21 @@ async fn test_create_login_without_login_data_fails() {
 #[tokio::test]
 async fn test_create_secure_note_without_secure_note_data_fails() {
     let (
+        sdk,
         api_client,
-        storage,
+        _storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
+        _temp_dir,
     ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
+        sdk,
         api_client,
-        storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
     );
 
     let mut cipher_view = create_test_cipher_view();
@@ -482,21 +432,21 @@ async fn test_create_secure_note_without_secure_note_data_fails() {
 #[tokio::test]
 async fn test_create_card_without_card_data_fails() {
     let (
+        sdk,
         api_client,
-        storage,
+        _storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
+        _temp_dir,
     ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
+        sdk,
         api_client,
-        storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
     );
 
     let mut cipher_view = create_test_cipher_view();
@@ -516,21 +466,21 @@ async fn test_create_card_without_card_data_fails() {
 #[tokio::test]
 async fn test_create_identity_without_identity_data_fails() {
     let (
+        sdk,
         api_client,
-        storage,
+        _storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
+        _temp_dir,
     ) = setup_test_environment().await;
 
     let write_service = WriteService::new(
+        sdk,
         api_client,
-        storage,
         cipher_service,
         validation_service,
         confirmation_service,
-        account_manager,
     );
 
     let mut cipher_view = create_test_cipher_view();

@@ -355,18 +355,15 @@ pub(crate) fn create_vault_service(ctx: &AppContext) -> VaultService {
 
 // Helper to create write service
 pub(crate) fn create_write_service(ctx: &AppContext, no_interaction: bool) -> WriteService {
-    let account_manager = Arc::new(AccountManager::new(ctx.storage()));
-    let cipher_service = Arc::new(CipherService::new(Arc::new(ctx.sdk().clone())));
-    let validation_service = Arc::new(ValidationService::new());
-    let confirmation_service = Arc::new(ConfirmationService::new(no_interaction));
+    let sdk = Arc::new(ctx.sdk().clone());
+    let cipher_service = Arc::new(CipherService::new(Arc::clone(&sdk)));
 
     WriteService::new(
+        sdk,
         ctx.api_client(),
-        ctx.storage(),
         cipher_service,
-        validation_service,
-        confirmation_service,
-        account_manager,
+        Arc::new(ValidationService::new()),
+        Arc::new(ConfirmationService::new(no_interaction)),
     )
 }
 
@@ -898,11 +895,10 @@ pub async fn execute_move(
         .move_cipher(&cmd.item_id, folder_id, session)
         .await
     {
-        Ok(moved) => {
-            // Return decrypted view - moved.id is Option<CipherId>
+        Ok(()) => {
+            // The bulk move endpoint returns no body, so read the item back.
             let vault_service = create_vault_service(ctx);
-            let id_str = moved.id.map(|id| id.to_string()).unwrap_or_default();
-            match vault_service.get_item(&id_str, session).await {
+            match vault_service.get_item(&cmd.item_id, session).await {
                 Ok(decrypted) => Ok(Response::success(decrypted)),
                 Err(e) => Ok(Response::error(e.to_string())),
             }

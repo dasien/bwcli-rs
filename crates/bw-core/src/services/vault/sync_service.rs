@@ -8,6 +8,8 @@ use crate::models::vault::parse_sync_response;
 use crate::services::api::{ApiClient, BitwardenApiClient};
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
 use bitwarden_core::Client;
+use bitwarden_state::repository::Repository;
+use bitwarden_vault::{Cipher, Folder};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -89,31 +91,34 @@ impl SyncService {
         let now = chrono::Utc::now().to_rfc3339();
         let mut storage = self.storage.lock().await;
 
-        // Convert ciphers Vec to HashMap keyed by ID
-        let ciphers_map: HashMap<String, _> = sync_data
+        // Ciphers and folders go into the SDK's state repositories, which is
+        // where `CiphersClient`/`FoldersClient` read from. `replace_all` mirrors
+        // a full sync: the server response is authoritative.
+        let ciphers: Vec<_> = sync_data
             .ciphers
             .into_iter()
-            .filter_map(|c| c.id.map(|id| (id.to_string(), c)))
+            .filter_map(|c| c.id.map(|id| (id, c)))
             .collect();
-        storage
-            .set(
-                &StorageKey::UserCiphers.format(Some(&user_id)),
-                &ciphers_map,
-            )
+
+        let folders: Vec<_> = sync_data
+            .folders
+            .into_iter()
+            .filter_map(|f| f.id.map(|id| (id, f)))
+            .collect();
+
+        let state = self.sdk.platform().state();
+
+        state
+            .get::<Cipher>()
+            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .replace_all(ciphers)
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
-        // Convert folders Vec to HashMap keyed by ID
-        let folders_map: HashMap<String, _> = sync_data
-            .folders
-            .into_iter()
-            .filter_map(|f| f.id.map(|id| (id.to_string(), f)))
-            .collect();
-        storage
-            .set(
-                &StorageKey::UserFolders.format(Some(&user_id)),
-                &folders_map,
-            )
+        state
+            .get::<Folder>()
+            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .replace_all(folders)
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 

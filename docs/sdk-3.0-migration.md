@@ -37,6 +37,24 @@ writes a different shape. The two were already mutually incompatible; keeping
 Secondary benefit: letting the SDK own tokens removes the class of bug that
 produced the deadlocked, `client_id`-less, unflushed refresh path.
 
+## SDK export gap found in step 4 (worth reporting upstream)
+
+`CiphersClient::create`/`edit` and `FoldersClient::create`/`edit` take request
+types — `CipherCreateRequest`, `CipherEditRequest`, `FolderAddEditRequest` —
+that `bitwarden-vault` does not export; `cipher_client` is `pub(crate)`. The
+methods are therefore uncallable from outside the crate, and nothing in the SDK
+tree calls them: not the wasm bindings, not uniffi, not upstream `bw`.
+`FoldersClient` has no `delete` at all.
+
+Consequence: vault writes are split, each side forced rather than chosen.
+- SDK: cipher delete / soft-delete / restore / move (ids only; these update the
+  state repository themselves).
+- Hand-rolled + explicit repository write: cipher create/edit, all folder
+  writes. The explicit write matters because reads now come from the repository,
+  so without it a create would not appear until the next sync.
+
+Revisit if those types get exported.
+
 ## TS-CLI parity matrix (as of 2026-08-22)
 
 Top-level commands the TS CLI has and we do not:

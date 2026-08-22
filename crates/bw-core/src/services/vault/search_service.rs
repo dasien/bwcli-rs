@@ -5,8 +5,7 @@
 use bitwarden_collections::collection::CollectionId;
 use bitwarden_collections::collection::CollectionView;
 use bitwarden_core::OrganizationId;
-use bitwarden_vault::{Cipher, CipherId, CipherListView, CipherListViewType, FolderId, FolderView};
-use std::collections::HashMap;
+use bitwarden_vault::{CipherId, CipherListView, CipherListViewType, FolderId, FolderView};
 
 /// Item filter options for list operations
 #[derive(Debug, Default, Clone)]
@@ -29,19 +28,21 @@ impl SearchService {
         Self
     }
 
-    /// Filter ciphers based on criteria
+    /// Filter decrypted items.
     ///
-    /// Returns filtered HashMap of encrypted ciphers (not decrypted yet).
-    /// Filtering done on encrypted metadata (IDs, dates, structure).
-    pub fn filter_ciphers(
+    /// Previously split in two — metadata filters over encrypted ciphers, then
+    /// search/url after decryption. Ciphers now come from the SDK already
+    /// decrypted (`CiphersClient::list`), and `CipherListView` carries every
+    /// field the metadata filters need, so one pass does it.
+    pub fn filter_items(
         &self,
-        ciphers: &HashMap<String, Cipher>,
+        ciphers: Vec<CipherListView>,
         filters: &ItemFilters,
-    ) -> HashMap<String, Cipher> {
+    ) -> Vec<CipherListView> {
         ciphers
-            .iter()
-            .filter(|(_, cipher)| {
-                // Trash filter (exclude deleted by default)
+            .into_iter()
+            .filter(|cipher| {
+                // Trash: excluded unless explicitly requested.
                 if filters.trash {
                     if cipher.deleted_date.is_none() {
                         return false;
@@ -50,38 +51,42 @@ impl SearchService {
                     return false;
                 }
 
-                // Organization filter
                 if let Some(org_id) = &filters.organization_id {
-                    let org_id_parsed: Option<OrganizationId> = org_id.parse().ok();
-                    if cipher.organization_id != org_id_parsed {
+                    let wanted: Option<OrganizationId> = org_id.parse().ok();
+                    if cipher.organization_id != wanted {
                         return false;
                     }
                 }
 
-                // Folder filter (including "no folder" as None)
+                // Also matches "no folder" when the caller passes a value that
+                // does not parse as a folder id.
                 if let Some(folder_id) = &filters.folder_id {
-                    let folder_id_parsed: Option<FolderId> = folder_id.parse().ok();
-                    if cipher.folder_id != folder_id_parsed {
+                    let wanted: Option<FolderId> = folder_id.parse().ok();
+                    if cipher.folder_id != wanted {
                         return false;
                     }
                 }
 
-                // Collection filter
                 if let Some(collection_id) = &filters.collection_id {
-                    if let Ok(collection_id_parsed) = collection_id.parse::<CollectionId>() {
-                        if !cipher.collection_ids.contains(&collection_id_parsed) {
-                            return false;
+                    match collection_id.parse::<CollectionId>() {
+                        Ok(wanted) => {
+                            if !cipher.collection_ids.contains(&wanted) {
+                                return false;
+                            }
                         }
-                    } else {
-                        return false;
+                        Err(_) => return false,
                     }
                 }
-
-                // Note: Search and URL filters require decryption, handled after
 
                 true
             })
-            .map(|(id, cipher)| (id.clone(), cipher.clone()))
+            .filter(|c| {
+                filters
+                    .search
+                    .as_deref()
+                    .is_none_or(|s| self.matches_search(c, s))
+            })
+            .filter(|c| filters.url.as_deref().is_none_or(|u| self.matches_url(c, u)))
             .collect()
     }
 
@@ -139,27 +144,6 @@ impl SearchService {
         }
 
         collect(&|name: &str| name.contains(&needle))
-    }
-
-    /// Apply the filters that can only be evaluated after decryption.
-    ///
-    /// `filter_ciphers` handles everything expressible on encrypted metadata;
-    /// `--search` and `--url` need plaintext, so they run here.
-    pub fn filter_decrypted(
-        &self,
-        ciphers: Vec<CipherListView>,
-        filters: &ItemFilters,
-    ) -> Vec<CipherListView> {
-        ciphers
-            .into_iter()
-            .filter(|c| {
-                filters
-                    .search
-                    .as_deref()
-                    .is_none_or(|s| self.matches_search(c, s))
-            })
-            .filter(|c| filters.url.as_deref().is_none_or(|u| self.matches_url(c, u)))
-            .collect()
     }
 
     /// Case-insensitive substring match over the fields users expect
@@ -444,7 +428,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = s.filter_decrypted(ciphers, &filters);
+        let result = s.filter_items(ciphers, &filters);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "GitHub");
@@ -458,7 +442,7 @@ mod tests {
             login_view("B", "b", &[]),
         ];
 
-        let result = s.filter_decrypted(ciphers, &ItemFilters::default());
+        let result = s.filter_items(ciphers, &ItemFilters::default());
 
         assert_eq!(result.len(), 2);
     }

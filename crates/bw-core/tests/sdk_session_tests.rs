@@ -85,6 +85,52 @@ async fn establish(client: &Client) -> String {
         .expect("mint session key")
 }
 
+fn cipher_view(name: &str) -> bitwarden_vault::CipherView {
+    use bitwarden_vault::{CipherRepromptType, CipherType, LoginView};
+
+    bitwarden_vault::CipherView {
+        id: Some(bitwarden_vault::CipherId::new_v4()),
+        organization_id: None,
+        folder_id: None,
+        collection_ids: vec![],
+        key: None,
+        name: name.to_string(),
+        notes: None,
+        r#type: CipherType::Login,
+        login: Some(LoginView {
+            username: None,
+            password: None,
+            password_revision_date: None,
+            uris: None,
+            totp: None,
+            autofill_on_page_load: None,
+            fido2_credentials: None,
+        }),
+        identity: None,
+        card: None,
+        secure_note: None,
+        ssh_key: None,
+        bank_account: None,
+        drivers_license: None,
+        passport: None,
+        favorite: false,
+        reprompt: CipherRepromptType::None,
+        organization_use_totp: false,
+        edit: true,
+        permissions: None,
+        view_password: true,
+        local_data: None,
+        attachments: None,
+        attachment_decryption_failures: None,
+        fields: None,
+        password_history: None,
+        creation_date: Utc::now(),
+        deleted_date: None,
+        revision_date: Utc::now(),
+        archived_date: None,
+    }
+}
+
 fn folder(name: &str) -> FolderView {
     FolderView {
         id: None,
@@ -197,4 +243,32 @@ async fn a_non_uuid_user_id_is_rejected_up_front() {
         format!("{err:#}").contains("not a valid user id"),
         "unexpected error: {err:#}"
     );
+}
+
+/// Regression: `UnlockClient::unlock` restores keys but does not set the
+/// client's user id. Decryption worked, so reads looked fine, while *encryption*
+/// failed with "Client User Id has not been set" — breaking every create and
+/// edit. `unlock_with_session` now sets it from persisted state.
+#[tokio::test]
+async fn unlocking_sets_the_user_id_so_encryption_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = establish(&client_in(dir.path()).await).await;
+
+    let next = client_in(dir.path()).await;
+    sdk_session::unlock_with_session(&next, &session)
+        .await
+        .expect("unlock");
+
+    assert!(
+        next.internal.get_user_id().is_some(),
+        "the client must know its user id after unlocking"
+    );
+
+    // The operation that actually regressed: encryption records who encrypted
+    // the item, so it needs the user id.
+    next.vault()
+        .ciphers()
+        .encrypt(cipher_view("Encrypt me"))
+        .await
+        .expect("encryption should work after unlocking");
 }
