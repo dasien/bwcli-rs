@@ -40,31 +40,27 @@ pub fn get_device_type() -> DeviceType {
 /// # Returns
 /// Configured SDK client ready for authentication and vault operations
 pub fn create_sdk_client(api_url: Option<String>, identity_url: Option<String>) -> Result<Client> {
-    // If no custom URLs provided, use SDK defaults which are correct for Bitwarden cloud
-    let settings = match (&api_url, &identity_url) {
-        (None, None) => {
-            // Use SDK defaults but with CLI-specific device type and user agent
-            Some(ClientSettings {
-                device_type: get_device_type(),
-                user_agent: format!("Bitwarden CLI/{}", env!("CARGO_PKG_VERSION")),
-                bitwarden_client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-                ..ClientSettings::default()
-            })
-        }
-        _ => {
-            // Custom URLs provided (self-hosted)
-            Some(ClientSettings {
-                api_url: api_url.unwrap_or_else(|| "https://api.bitwarden.com".to_string()),
-                identity_url: identity_url
-                    .unwrap_or_else(|| "https://identity.bitwarden.com".to_string()),
-                user_agent: format!("Bitwarden CLI/{}", env!("CARGO_PKG_VERSION")),
-                device_type: get_device_type(),
-                bitwarden_client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            })
-        }
+    // Start from the SDK defaults (correct for Bitwarden cloud) and override only
+    // what the CLI is responsible for. Spreading `..default()` rather than listing
+    // every field keeps this compiling when the SDK adds settings, which is how
+    // this broke on the 2.0 -> 3.0 upgrade.
+    let mut settings = ClientSettings {
+        device_type: get_device_type(),
+        user_agent: format!("Bitwarden CLI/{}", env!("CARGO_PKG_VERSION")),
+        bitwarden_client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        bitwarden_package_type: Some("cli".to_string()),
+        ..ClientSettings::default()
     };
 
-    Ok(Client::new(settings))
+    // Self-hosted overrides.
+    if let Some(url) = api_url {
+        settings.api_url = url;
+    }
+    if let Some(url) = identity_url {
+        settings.identity_url = url;
+    }
+
+    Ok(Client::new(Some(settings)))
 }
 
 #[cfg(test)]

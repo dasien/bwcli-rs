@@ -1,35 +1,31 @@
-//! Export service and formatters
+//! Export service
+//!
+//! Formatting is delegated entirely to `bitwarden-exporters`, which is the same
+//! code path the other Bitwarden clients use. The CLI keeps ownership of format
+//! naming, password policy, and file output.
 
-pub mod formatters;
-
-use crate::models::vault::{CipherView, FolderView};
 use crate::services::import_export::errors::ExportError;
-use async_trait::async_trait;
-use secrecy::Secret;
-use std::collections::HashMap;
+use bitwarden_core::Client;
+use bitwarden_exporters::{ExporterClientExt, ExportFormat};
+use bitwarden_vault::{Cipher, Folder};
+use secrecy::{ExposeSecret, Secret};
 use std::sync::Arc;
 
-/// Export data structure (decrypted vault items)
+/// Vault data to export.
+///
+/// These are the *encrypted* SDK types: `export_vault` decrypts them itself
+/// using the client's key store, so the caller must not pre-decrypt.
 #[derive(Debug)]
 pub struct ExportData {
-    pub folders: Vec<FolderView>,
-    pub ciphers: Vec<CipherView>,
+    pub folders: Vec<Folder>,
+    pub ciphers: Vec<Cipher>,
 }
 
 /// Export options
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ExportOptions {
     pub password: Option<Secret<String>>,
     pub organization_id: Option<String>,
-}
-
-impl Default for ExportOptions {
-    fn default() -> Self {
-        Self {
-            password: None,
-            organization_id: None,
-        }
-    }
 }
 
 /// Export result
@@ -41,57 +37,22 @@ pub struct ExportResult {
     pub encrypted: bool,
 }
 
-/// Trait for export format implementations
-#[async_trait]
-pub trait ExportFormatter: Send + Sync {
-    /// Format name (e.g., "csv", "json", "encrypted_json")
-    fn format_name(&self) -> &str;
-
-    /// File extension (e.g., "csv", "json")
-    fn file_extension(&self) -> &str;
-
-    /// Format vault data for export
-    async fn format(
-        &self,
-        data: &ExportData,
-        options: &ExportOptions,
-    ) -> Result<Vec<u8>, ExportError>;
-
-    /// Whether this format requires encryption password
-    fn requires_password(&self) -> bool;
-
-    /// Whether this is an encrypted format
-    fn is_encrypted(&self) -> bool;
-}
+/// Format names accepted on the command line, in the order `--help` lists them.
+const SUPPORTED_FORMATS: [&str; 3] = ["csv", "encrypted_json", "json"];
 
 /// Service for exporting vault data
 pub struct ExportService {
-    formatters: HashMap<String, Arc<dyn ExportFormatter>>,
+    client: Arc<Client>,
 }
 
 impl ExportService {
-    /// Create a new export service with all formatters
-    pub fn new() -> Self {
-        let mut formatters: HashMap<String, Arc<dyn ExportFormatter>> = HashMap::new();
-
-        // Register formatters
-        formatters.insert(
-            "csv".to_string(),
-            Arc::new(formatters::csv::CsvFormatter::new()),
-        );
-        formatters.insert(
-            "json".to_string(),
-            Arc::new(formatters::json::JsonFormatter::new()),
-        );
-        formatters.insert(
-            "encrypted_json".to_string(),
-            Arc::new(formatters::encrypted_json::EncryptedJsonFormatter::new()),
-        );
-
-        Self { formatters }
+    pub fn new(client: Arc<Client>) -> Self {
+        Self { client }
     }
 
-    /// Export vault to specified format
+    /// Export vault to the specified format.
+    ///
+    /// Writes to `output_path` when given, otherwise to stdout.
     pub async fn export(
         &self,
         format: &str,
@@ -99,50 +60,61 @@ impl ExportService {
         data: ExportData,
         options: ExportOptions,
     ) -> Result<ExportResult, ExportError> {
-        // Get formatter
-        let formatter = self
-            .formatters
-            .get(format)
-            .ok_or_else(|| ExportError::UnsupportedFormat(format.to_string()))?;
-
-        // Validate password requirement
-        if formatter.requires_password() && options.password.is_none() {
-            return Err(ExportError::PasswordRequired);
+        // The SDK's organization export is unimplemented upstream and panics
+        // (`export_organization_vault` is a `todo!()`), so refuse rather than
+        // abort the process.
+        if options.organization_id.is_some() {
+            return Err(ExportError::UnsupportedFormat(
+                "organization export is not supported yet".to_string(),
+            ));
         }
 
-        // Format data
-        let formatted = formatter.format(&data, &options).await?;
+        let export_format = match format {
+            "json" => ExportFormat::Json,
+            "csv" => ExportFormat::Csv,
+            "encrypted_json" => {
+                // The TypeScript CLI supports an account-key-protected export
+                // when no password is given. The SDK only implements the
+                // password-protected variant, so require one explicitly rather
+                // than silently producing a different kind of file.
+                let password = options.password.as_ref().ok_or(ExportError::PasswordRequired)?;
+                ExportFormat::EncryptedJson {
+                    password: password.expose_secret().to_string(),
+                }
+            }
+            other => return Err(ExportError::UnsupportedFormat(other.to_string())),
+        };
 
-        // Write to file or return for stdout
+        let encrypted = matches!(export_format, ExportFormat::EncryptedJson { .. });
+        let item_count = data.ciphers.len();
+
+        let contents = self
+            .client
+            .exporters()
+            .export_vault(data.folders, data.ciphers, export_format)
+            .await
+            .map_err(|e| ExportError::DecryptionError(e.to_string()))?;
+
         if let Some(path) = output_path {
-            std::fs::write(path, &formatted)
+            std::fs::write(path, contents.as_bytes())
                 .map_err(|e| ExportError::FileWriteError(format!("{}: {}", path, e)))?;
         } else {
-            // Write to stdout
             use std::io::Write;
             std::io::stdout()
-                .write_all(&formatted)
+                .write_all(contents.as_bytes())
                 .map_err(ExportError::IoError)?;
         }
 
         Ok(ExportResult {
-            item_count: data.ciphers.len(),
+            item_count,
             format: format.to_string(),
             output_path: output_path.map(String::from),
-            encrypted: formatter.is_encrypted(),
+            encrypted,
         })
     }
 
     /// List supported export formats
     pub fn supported_formats(&self) -> Vec<String> {
-        let mut formats: Vec<String> = self.formatters.keys().cloned().collect();
-        formats.sort();
-        formats
-    }
-}
-
-impl Default for ExportService {
-    fn default() -> Self {
-        Self::new()
+        SUPPORTED_FORMATS.iter().map(|s| s.to_string()).collect()
     }
 }

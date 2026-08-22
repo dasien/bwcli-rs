@@ -23,6 +23,9 @@ bitwarden-vault.workspace = true
 bitwarden-collections.workspace = true
 bitwarden-api-api.workspace = true
 bitwarden-generators.workspace = true
+bitwarden-exporters.workspace = true
+bitwarden-send.workspace = true
+bitwarden-state.workspace = true
 bitwarden-encoding.workspace = true
 bitwarden-error.workspace = true
 
@@ -52,6 +55,12 @@ csv.workspace = true
 serde_urlencoded = "0.7.1"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+# NOTE: deliberately no `tokio` entry here. Adding `features = ["test-util"]`
+# (which is *not* part of tokio's `full`) changes tokio's feature set for the
+# test build only, which changes its fingerprint, which forces a second
+# compilation of every crate above it — bitwarden-core/-vault/-auth/-send,
+# bw-core, and the `bw` binary. That roughly doubled target/. Nothing in the
+# tests uses test-util (no time::pause / start_paused), and `#[tokio::test]`
+# works fine from the regular dependency's `full` feature set.
 tempfile.workspace = true
 wiremock = "0.6"

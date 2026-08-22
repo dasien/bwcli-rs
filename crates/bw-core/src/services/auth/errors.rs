@@ -52,7 +52,10 @@ impl From<CryptoError> for AuthError {
             CryptoError::InvalidKey => AuthError::CryptoOperationFailed {
                 message: "Invalid encryption key".to_string(),
             },
-            CryptoError::InvalidMac => AuthError::InvalidPassword,
+            // SDK 3.0 replaced the old `InvalidMac` variant with these. In an auth
+            // context a failed decrypt of the user key means the master password
+            // (or session key) was wrong.
+            CryptoError::Decrypt | CryptoError::KeyDecrypt => AuthError::InvalidPassword,
             CryptoError::InsufficientKdfParameters => AuthError::KdfError {
                 message: "Insufficient KDF parameters".to_string(),
             },
@@ -131,13 +134,14 @@ mod tests {
     }
 
     #[test]
-    fn test_crypto_error_invalid_mac_conversion() {
-        let crypto_err = CryptoError::InvalidMac;
+    fn test_crypto_error_decrypt_conversion() {
+        // SDK 3.0 replaced `InvalidMac` with `Decrypt`/`KeyDecrypt`.
+        let crypto_err = CryptoError::Decrypt;
         let auth_err: AuthError = crypto_err.into();
 
         match auth_err {
             AuthError::InvalidPassword => {
-                // Expected - InvalidMac indicates wrong password
+                // Expected - a failed decrypt indicates the wrong password
             }
             _ => panic!("Expected InvalidPassword, got {:?}", auth_err),
         }

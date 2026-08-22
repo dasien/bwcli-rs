@@ -21,8 +21,12 @@ impl SessionKey {
         OsRng.fill_bytes(&mut key_bytes);
 
         Self {
-            encryption_key: key_bytes[0..32].try_into().unwrap(),
-            mac_key: key_bytes[32..64].try_into().unwrap(),
+            encryption_key: key_bytes[0..32]
+                .try_into()
+                .expect("halves of a fixed 64-byte buffer are always 32 bytes"),
+            mac_key: key_bytes[32..64]
+                .try_into()
+                .expect("halves of a fixed 64-byte buffer are always 32 bytes"),
         }
     }
 
@@ -51,8 +55,12 @@ impl SessionKey {
         }
 
         let key = Self {
-            encryption_key: bytes[0..32].try_into().unwrap(),
-            mac_key: bytes[32..64].try_into().unwrap(),
+            encryption_key: bytes[0..32]
+                .try_into()
+                .expect("length checked to be exactly 64 above"),
+            mac_key: bytes[32..64]
+                .try_into()
+                .expect("length checked to be exactly 64 above"),
         };
 
         bytes.zeroize();

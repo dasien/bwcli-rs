@@ -1,5 +1,6 @@
 use crate::AppContext;
 use crate::GlobalArgs;
+use crate::commands::vault::{create_vault_service, create_write_service};
 use crate::output::Response;
 use clap::Args;
 
@@ -168,6 +169,9 @@ pub async fn execute_generate(
             min_uppercase: cmd.uppercase.filter(|&v| v > 0).map(|v| v as u8),
             min_number: cmd.number.filter(|&v| v > 0).map(|v| v as u8),
             min_special: cmd.special.filter(|&v| v > 0).map(|v| v as u8),
+            // Generator options added in SDK 3.0 that the CLI does not expose
+            // yet (custom charsets, consecutive-character limit).
+            ..Default::default()
         };
 
         let result = generator.password(request).map_err(|e| match e {
@@ -220,17 +224,150 @@ pub async fn execute_decrypt(
 }
 
 pub async fn execute_import(
-    _cmd: ImportCommand,
-    _global_args: &GlobalArgs,
-    _ctx: &AppContext,
+    cmd: ImportCommand,
+    global_args: &GlobalArgs,
+    ctx: &AppContext,
 ) -> anyhow::Result<Response> {
-    Ok(Response::error("Not yet implemented"))
+    use bw_core::services::import_export::{ImportOptions, ImportService};
+    use std::collections::HashMap;
+
+    let session = global_args.session.as_deref().unwrap_or("");
+    if session.is_empty() {
+        anyhow::bail!("Vault is locked. Run 'bw unlock' and set BW_SESSION.");
+    }
+
+    if cmd.organizationid.is_some() {
+        anyhow::bail!("Importing into an organization is not supported yet.");
+    }
+
+    let import_service = ImportService::new();
+    let data = import_service
+        .parse_file(&cmd.format, &cmd.file, ImportOptions::default())
+        .await?;
+
+    let vault_service = create_vault_service(ctx);
+    let write_service = create_write_service(ctx, global_args.nointeraction);
+
+    // Folder names are the only link the intermediate format carries, so build
+    // a name -> id map from what already exists and create whatever is missing.
+    let mut folder_ids: HashMap<String, bitwarden_vault::FolderId> = vault_service
+        .list_folders(None, session)
+        .await?
+        .into_iter()
+        .filter_map(|f| f.id.map(|id| (f.name, id)))
+        .collect();
+
+    let mut folders_created = 0usize;
+    for folder in &data.folders {
+        if folder.name.is_empty() || folder_ids.contains_key(&folder.name) {
+            continue;
+        }
+
+        let created = write_service
+            .create_folder(folder.name.clone(), session)
+            .await?;
+        if let Some(id) = created.id {
+            folder_ids.insert(folder.name.clone(), id);
+        }
+        folders_created += 1;
+    }
+
+    // Create items one at a time. The server has a bulk import endpoint that
+    // would be far fewer round trips for large exports; see
+    // docs/sdk-3.0-migration.md.
+    let mut items_created = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+
+    for item in &data.items {
+        let folder_id = item
+            .folder_name
+            .as_ref()
+            .and_then(|name| folder_ids.get(name).copied());
+
+        match write_service
+            .create_cipher(item.to_cipher_view(folder_id), session)
+            .await
+        {
+            Ok(_) => items_created += 1,
+            Err(e) => failures.push(format!("{}: {}", item.name, e)),
+        }
+    }
+
+    if !failures.is_empty() {
+        eprintln!("{} item(s) could not be imported:", failures.len());
+        for failure in &failures {
+            eprintln!("  {failure}");
+        }
+    }
+
+    if global_args.response {
+        Ok(Response::success(serde_json::json!({
+            "format": cmd.format,
+            "itemsCreated": items_created,
+            "foldersCreated": folders_created,
+            "failed": failures.len(),
+        })))
+    } else {
+        Ok(Response::success_raw(format!(
+            "Imported {items_created} item(s) and {folders_created} folder(s)."
+        )))
+    }
 }
 
 pub async fn execute_export(
-    _cmd: ExportCommand,
-    _global_args: &GlobalArgs,
-    _ctx: &AppContext,
+    cmd: ExportCommand,
+    global_args: &GlobalArgs,
+    ctx: &AppContext,
 ) -> anyhow::Result<Response> {
-    Ok(Response::error("Not yet implemented"))
+    use bw_core::services::import_export::{ExportData, ExportOptions, ExportService};
+    use secrecy::Secret;
+    use std::sync::Arc;
+
+    // Export decrypts through the SDK key store, which is only populated when
+    // the vault is unlocked.
+    if global_args.session.as_deref().unwrap_or("").is_empty() {
+        anyhow::bail!("Vault is locked. Run 'bw unlock' and set BW_SESSION.");
+    }
+
+    // Refuse before reading the vault: the SDK's organization export is a
+    // `todo!()` that would abort the process.
+    if cmd.organizationid.is_some() {
+        anyhow::bail!("Exporting an organization vault is not supported yet.");
+    }
+
+    // Matches the TypeScript CLI's default.
+    let format = cmd.format.as_deref().unwrap_or("csv");
+
+    let vault_service = create_vault_service(ctx);
+    let folders = vault_service.encrypted_folders().await?;
+    let ciphers = vault_service.encrypted_ciphers().await?;
+
+    let service = ExportService::new(Arc::new(ctx.sdk().clone()));
+    let result = service
+        .export(
+            format,
+            cmd.output.as_deref(),
+            ExportData { folders, ciphers },
+            ExportOptions {
+                password: cmd.password.map(Secret::new),
+                organization_id: cmd.organizationid,
+            },
+        )
+        .await?;
+
+    let message = match &result.output_path {
+        Some(path) => format!("Saved {} item(s) to {}", result.item_count, path),
+        None => format!("Exported {} item(s)", result.item_count),
+    };
+
+    if global_args.response {
+        Ok(Response::success(serde_json::json!({
+            "format": result.format,
+            "itemCount": result.item_count,
+            "encrypted": result.encrypted,
+            "output": result.output_path,
+        })))
+    } else {
+        Ok(Response::success_raw(message))
+    }
 }

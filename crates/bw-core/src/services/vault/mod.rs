@@ -100,9 +100,15 @@ impl VaultService {
         _session: &str,
     ) -> Result<Vec<CipherListView>, VaultError> {
         let ciphers = self.get_ciphers().await?;
+
+        // Filters expressible on encrypted metadata first, so we decrypt as
+        // little as possible.
         let filtered = self.search_service.filter_ciphers(&ciphers, filters);
         let cipher_vec: Vec<Cipher> = filtered.into_values().collect();
-        self.cipher_service.decrypt_ciphers(cipher_vec)
+        let decrypted = self.cipher_service.decrypt_ciphers(cipher_vec).await?;
+
+        // `--search` and `--url` need plaintext, so they apply after.
+        Ok(self.search_service.filter_decrypted(decrypted, filters))
     }
 
     /// List all folders
@@ -182,17 +188,42 @@ impl VaultService {
     ) -> Result<CipherView, VaultError> {
         let ciphers = self.get_ciphers().await?;
 
-        // Try to find by ID first (O(1) lookup)
-        let cipher = if let Some(cipher) = ciphers.get(id_or_search) {
-            cipher.clone()
-        } else {
-            // Search by name
-            self.search_service
-                .find_cipher_by_name(&ciphers, id_or_search)
-                .ok_or(VaultError::ItemNotFound)?
-        };
+        // Fast path: exact id lookup needs no decryption.
+        if let Some(cipher) = ciphers.get(id_or_search) {
+            return self.cipher_service.decrypt_cipher(cipher.clone()).await;
+        }
 
-        self.cipher_service.decrypt_cipher(cipher)
+        // Otherwise names are encrypted, so searching requires decrypting.
+        let candidates: Vec<Cipher> = ciphers
+            .values()
+            .filter(|c| c.deleted_date.is_none())
+            .cloned()
+            .collect();
+        let list = self.cipher_service.decrypt_ciphers(candidates).await?;
+
+        let mut matches = self.search_service.find_by_name(&list, id_or_search);
+
+        match matches.len() {
+            0 => Err(VaultError::ItemNotFound),
+            1 => {
+                let (id, _) = matches.remove(0);
+                let cipher = ciphers
+                    .get(&id.to_string())
+                    .ok_or(VaultError::ItemNotFound)?
+                    .clone();
+                self.cipher_service.decrypt_cipher(cipher).await
+            }
+            // Returning an arbitrary match would silently hand back the wrong
+            // secret (`bw get password <name>`), so make the caller disambiguate.
+            _ => Err(VaultError::MultipleItemsFound {
+                search: id_or_search.to_string(),
+                matches: matches
+                    .iter()
+                    .map(|(id, name)| format!("{name} ({id})"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            }),
+        }
     }
 
     /// Get specific field from item
@@ -243,19 +274,52 @@ impl VaultService {
     async fn get_ciphers(&self) -> Result<HashMap<String, Cipher>, VaultError> {
         let user_id = self.get_user_id().await?;
         let storage = self.storage.lock().await;
+        let key = StorageKey::UserCiphers.format(Some(&user_id));
         storage
-            .get::<HashMap<String, Cipher>>(&StorageKey::UserCiphers.format(Some(&user_id)))
-            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .get::<HashMap<String, Cipher>>(&key)
+            .map_err(|e| Self::cache_error(&key, e))?
             .ok_or(VaultError::NotSynced)
+    }
+
+    /// Encrypted ciphers as stored, excluding trash.
+    ///
+    /// Exposed for callers that hand ciphers to SDK APIs which decrypt
+    /// internally (export), so they must not be pre-decrypted.
+    pub async fn encrypted_ciphers(&self) -> Result<Vec<Cipher>, VaultError> {
+        Ok(self
+            .get_ciphers()
+            .await?
+            .into_values()
+            .filter(|c| c.deleted_date.is_none())
+            .collect())
+    }
+
+    /// Encrypted folders as stored. See [`Self::encrypted_ciphers`].
+    pub async fn encrypted_folders(&self) -> Result<Vec<Folder>, VaultError> {
+        Ok(self.get_folders().await?.into_values().collect())
+    }
+
+    /// Turn a cache deserialization failure into something actionable.
+    ///
+    /// Vault data is stored as SDK types, several of which use
+    /// `deny_unknown_fields`. Cache written by an older client can therefore
+    /// carry a field the current SDK rejects, which fails the *whole* map and
+    /// leaves the CLI unable to read the vault. Re-syncing rewrites it.
+    fn cache_error(key: &str, e: impl std::fmt::Display) -> VaultError {
+        VaultError::StorageError(format!(
+            "cached vault data at '{key}' could not be read ({e}). \
+             Run 'bw sync --force' to refresh it."
+        ))
     }
 
     /// Get folders from flat storage (stored as HashMap<id, Folder>)
     async fn get_folders(&self) -> Result<HashMap<String, Folder>, VaultError> {
         let user_id = self.get_user_id().await?;
         let storage = self.storage.lock().await;
+        let key = StorageKey::UserFolders.format(Some(&user_id));
         storage
-            .get::<HashMap<String, Folder>>(&StorageKey::UserFolders.format(Some(&user_id)))
-            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .get::<HashMap<String, Folder>>(&key)
+            .map_err(|e| Self::cache_error(&key, e))?
             .ok_or(VaultError::NotSynced)
     }
 
@@ -263,9 +327,10 @@ impl VaultService {
     async fn get_collections(&self) -> Result<HashMap<String, Collection>, VaultError> {
         let user_id = self.get_user_id().await?;
         let storage = self.storage.lock().await;
+        let key = StorageKey::UserCollections.format(Some(&user_id));
         storage
-            .get::<HashMap<String, Collection>>(&StorageKey::UserCollections.format(Some(&user_id)))
-            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .get::<HashMap<String, Collection>>(&key)
+            .map_err(|e| Self::cache_error(&key, e))?
             .ok_or(VaultError::NotSynced)
     }
 

@@ -20,6 +20,10 @@ pub mod api {
     /// Full vault sync
     pub const SYNC: &str = "/sync";
 
+    /// Account revision timestamp (ms since epoch); negative means the account
+    /// was deleted. Used to skip unnecessary syncs.
+    pub const ACCOUNT_REVISION_DATE: &str = "/accounts/revision-date";
+
     /// Ciphers endpoints
     pub mod ciphers {
         /// Base path for cipher operations (POST to create)

@@ -64,6 +64,9 @@ pub enum StorageKey {
     /// Encrypted folders array
     UserFolders,
 
+    /// Encrypted sends
+    UserSends,
+
     /// Collections array
     UserCollections,
 
@@ -157,6 +160,10 @@ impl StorageKey {
                 let uid = user_id.expect("UserFolders requires user_id");
                 format!("user_{}_folder_folders", uid)
             }
+            Self::UserSends => {
+                let uid = user_id.expect("UserSends requires user_id");
+                format!("user_{}_send_sends", uid)
+            }
             Self::UserCollections => {
                 let uid = user_id.expect("UserCollections requires user_id");
                 format!("user_{}_collection_collections", uid)
@@ -187,6 +194,7 @@ impl StorageKey {
                 | Self::UserKey
                 | Self::UserCiphers
                 | Self::UserFolders
+                | Self::UserSends
                 | Self::UserCollections
                 | Self::UserOrganizations
                 | Self::UserLastSync

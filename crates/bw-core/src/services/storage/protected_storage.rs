@@ -7,6 +7,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bitwarden_crypto::{
     EncString, KeyDecryptable, KeyEncryptable, OctetStreamBytes, SymmetricCryptoKey,
+    SymmetricKeyAlgorithm,
 };
 use thiserror::Error;
 
@@ -90,7 +91,9 @@ pub fn format_session_key(key: &SymmetricCryptoKey) -> String {
 /// # Returns
 /// A new random SymmetricCryptoKey
 pub fn generate_session_key() -> SymmetricCryptoKey {
-    SymmetricCryptoKey::make_aes256_cbc_hmac_key()
+    // Aes256CbcHmac specifically: the 64-byte enc+MAC layout is what the
+    // TypeScript CLI's BW_SESSION keys and __PROTECTED__ entries use.
+    SymmetricCryptoKey::make(SymmetricKeyAlgorithm::Aes256CbcHmac)
 }
 
 /// Encrypt a string using a session key

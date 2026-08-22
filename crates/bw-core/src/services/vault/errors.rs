@@ -15,6 +15,11 @@ pub enum VaultError {
     #[error("Item not found")]
     ItemNotFound,
 
+    #[error(
+        "More than one item matched '{search}'. Use the item's id instead. Matched: {matches}"
+    )]
+    MultipleItemsFound { search: String, matches: String },
+
     #[error("Field '{0}' not found on item")]
     FieldNotFound(&'static str),
 

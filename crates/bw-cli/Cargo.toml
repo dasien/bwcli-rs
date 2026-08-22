@@ -26,6 +26,11 @@ bw-core = { path = "../bw-core" }
 
 # Bitwarden SDK
 bitwarden-core.workspace = true
+bitwarden-vault.workspace = true
+bitwarden-send.workspace = true
+bitwarden-auth.workspace = true
+bitwarden-collections.workspace = true
+chrono.workspace = true
 bitwarden-generators.workspace = true
 
 # Security

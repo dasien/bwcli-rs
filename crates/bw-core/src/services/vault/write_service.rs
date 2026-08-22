@@ -79,7 +79,7 @@ impl WriteService {
         cipher_view.creation_date = now;
 
         // 4. Encrypt using SDK (returns EncryptionContext)
-        let encryption_context = self.cipher_service.encrypt_cipher(cipher_view)?;
+        let encryption_context = self.cipher_service.encrypt_cipher(cipher_view).await?;
 
         // 5. Convert to API request format
         let request: CipherRequestModel = encryption_context.into();
@@ -121,7 +121,7 @@ impl WriteService {
         cipher_view.revision_date = Utc::now();
 
         // 5. Encrypt using SDK
-        let encryption_context = self.cipher_service.encrypt_cipher(cipher_view)?;
+        let encryption_context = self.cipher_service.encrypt_cipher(cipher_view).await?;
 
         // 6. Convert to API request format
         let request: CipherRequestModel = encryption_context.into();
@@ -219,16 +219,18 @@ impl WriteService {
         let cipher = self.get_cipher(cipher_id).await?;
 
         // 4. Decrypt cipher
-        let mut cipher_view = self.cipher_service.decrypt_cipher(cipher)?;
+        let mut cipher_view = self.cipher_service.decrypt_cipher(cipher).await?;
 
         // 5. Update folder ID (SDK uses Option<FolderId>)
-        cipher_view.folder_id = folder_id
-            .map(|fid| {
-                fid.parse::<uuid::Uuid>()
-                    .map(FolderId::new)
-                    .ok()
-            })
-            .flatten();
+        //
+        // A parse failure used to be swallowed into `None`, which silently
+        // moved the item to *no* folder instead of reporting bad input.
+        cipher_view.folder_id = match folder_id {
+            Some(fid) => Some(fid.parse::<uuid::Uuid>().map(FolderId::new).map_err(|_| {
+                VaultError::InvalidInput(format!("'{fid}' is not a valid folder id"))
+            })?),
+            None => None,
+        };
 
         // 6. Update via API
         self.update_cipher(cipher_id, cipher_view, session).await

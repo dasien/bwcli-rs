@@ -52,8 +52,22 @@ pub fn validate(data: &ImportData) -> Result<(), ImportError> {
         }
         eprintln!("\nNo items were imported. Please fix the errors and try again.");
 
+        // Summarize the first failure into the error itself. The stderr report
+        // above is for humans; callers formatting a single-line error (and
+        // `--response` JSON consumers) need the detail too.
+        let first = &errors[0];
+        let mut first_error = String::new();
+        if let Some(line) = first.line {
+            first_error.push_str(&format!("line {}: ", line));
+        }
+        if let Some(field) = &first.field {
+            first_error.push_str(&format!("{}: ", field));
+        }
+        first_error.push_str(&first.message);
+
         return Err(ImportError::ValidationError {
             error_count: errors.len(),
+            first_error,
         });
     }
 

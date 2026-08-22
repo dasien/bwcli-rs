@@ -3,14 +3,20 @@
 //! This module provides functions for retrieving and managing the user key
 //! for vault decryption operations.
 
+use crate::models::state::KdfConfig;
 use crate::services::storage::{
-    AccountManager, JsonFileStorage, Storage, make_protected_key, parse_session_key,
+    AccountManager, JsonFileStorage, Storage, StorageKey, make_protected_key, parse_session_key,
     user_key_protected_storage_key,
 };
-use bitwarden_crypto::SymmetricCryptoKey;
+use bitwarden_core::key_management::account_cryptographic_state::WrappedAccountCryptographicState;
+use bitwarden_core::key_management::crypto::{InitUserCryptoMethod, InitUserCryptoRequest};
+use bitwarden_core::{Client, UserId};
+use bitwarden_crypto::{EncString, Kdf, SymmetricCryptoKey};
+use std::str::FromStr;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex;
+use tracing::debug;
 
 /// Key service errors
 #[derive(Debug, Error)]
@@ -29,6 +35,18 @@ pub enum KeyServiceError {
 
     #[error("Storage error: {0}")]
     StorageError(String),
+
+    #[error("KDF configuration not found. Run 'bw login' again.")]
+    KdfConfigNotFound,
+
+    #[error(
+        "Account private key not found in storage. Run 'bw login' again to \
+         re-fetch account keys."
+    )]
+    PrivateKeyNotFound,
+
+    #[error("Failed to initialize SDK crypto: {0}")]
+    CryptoInitFailed(String),
 }
 
 impl From<anyhow::Error> for KeyServiceError {
@@ -93,6 +111,77 @@ impl KeyService {
         // Decrypt the user key
         crate::services::storage::decrypt_user_key(&encrypted_user_key, &session_key)
             .map_err(|e| KeyServiceError::DecryptionFailed(e.to_string()))
+    }
+
+    /// Load the user key from protected storage into the SDK client's key store.
+    ///
+    /// The CLI derives and stores the user key itself, so the SDK client starts
+    /// every process with an empty key store. Without this call,
+    /// `client.vault()` encrypt/decrypt operations have no user key to work
+    /// with and fail. Call this once per invocation, before any vault command
+    /// touches ciphers.
+    ///
+    /// # Arguments
+    /// * `client` - The SDK client to initialize
+    /// * `session_str` - Base64-encoded session key (from BW_SESSION or --session)
+    pub async fn initialize_client_crypto(
+        &self,
+        client: &Client,
+        session_str: &str,
+    ) -> Result<(), KeyServiceError> {
+        let user_key = self.get_user_key(session_str).await?;
+
+        let user_id = self
+            .account_manager
+            .get_active_user_id()
+            .await?
+            .ok_or(KeyServiceError::NoActiveUser)?;
+
+        let account = self
+            .account_manager
+            .get_account(&user_id)
+            .await?
+            .ok_or(KeyServiceError::NoActiveUser)?;
+
+        let storage = self.storage.lock().await;
+
+        let kdf_config: KdfConfig = storage
+            .get(&StorageKey::UserKdfConfig.format(Some(&user_id)))
+            .map_err(|e| KeyServiceError::StorageError(e.to_string()))?
+            .ok_or(KeyServiceError::KdfConfigNotFound)?;
+
+        let private_key: String = storage
+            .get(&StorageKey::UserPrivateKey.format(Some(&user_id)))
+            .map_err(|e| KeyServiceError::StorageError(e.to_string()))?
+            .ok_or(KeyServiceError::PrivateKeyNotFound)?;
+
+        drop(storage);
+
+        let kdf: Kdf = (&kdf_config)
+            .try_into()
+            .map_err(|e: anyhow::Error| KeyServiceError::CryptoInitFailed(e.to_string()))?;
+
+        let private_key = EncString::from_str(&private_key).map_err(|e| {
+            KeyServiceError::CryptoInitFailed(format!("Invalid account private key: {}", e))
+        })?;
+
+        debug!("Initializing SDK crypto from session key");
+
+        client
+            .crypto()
+            .initialize_user_crypto(InitUserCryptoRequest {
+                user_id: UserId::from_str(&user_id).ok(),
+                kdf_params: kdf,
+                email: account.email,
+                account_cryptographic_state: WrappedAccountCryptographicState::V1 { private_key },
+                method: InitUserCryptoMethod::DecryptedKey {
+                    decrypted_user_key: user_key.to_base64().to_string(),
+                },
+                // V1 -> V2 account key rotation is not something the CLI drives.
+                upgrade_token: None,
+            })
+            .await
+            .map_err(|e| KeyServiceError::CryptoInitFailed(e.to_string()))
     }
 
     /// Store the user key in protected storage

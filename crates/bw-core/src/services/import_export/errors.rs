@@ -56,8 +56,13 @@ pub enum ImportError {
     #[error("Failed to parse import data: {0}")]
     ParseError(String),
 
-    #[error("Validation failed with {error_count} error(s)")]
-    ValidationError { error_count: usize },
+    /// `first_error` summarizes the first failure so callers (and error
+    /// messages) are actionable without having to read the stderr report.
+    #[error("Validation failed with {error_count} error(s): {first_error}")]
+    ValidationError {
+        error_count: usize,
+        first_error: String,
+    },
 
     #[error("Password required for encrypted import")]
     PasswordRequired,

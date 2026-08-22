@@ -137,6 +137,10 @@ username: record.get(8).and_then(|s| s.to_non_empty()),
 
 ## 3. Unsafe Mutex Unwrap in Production Code
 
+> **Status (2026-08-20): no longer applicable.** `json_storage.rs` contains no
+> `lock().unwrap()` calls; the storage mutex is now the async `tokio::sync::Mutex`,
+> which has no poisoning.
+
 ### Problem
 Mutex locks are unwrapped without error handling, causing panics if the mutex is poisoned:
 
@@ -183,6 +187,12 @@ pub enum StorageError {
 ---
 
 ## 4. Unsafe Unwrap on Array Slicing
+
+> **Status (2026-08-20): not a defect.** Both slices are provably 32 bytes —
+> `generate()` slices a fixed `[u8; 64]`, and `from_base64()` returns early
+> unless the decoded length is exactly 64. The `unwrap()`s were replaced with
+> `expect()` carrying that rationale, so the invariant is readable at the call
+> site. No behavior change.
 
 ### Problem
 Array slicing with `try_into().unwrap()` can panic on malformed input:
@@ -400,6 +410,11 @@ impl ValidationService {
 ---
 
 ## 9. Unused `_force` Parameter in Sync
+
+> **Status (2026-08-20): fixed.** `SyncService::sync` now short-circuits on the
+> account revision date (`GET /accounts/revision-date`) and only bypasses that
+> check when `force` is set. A negative revision timestamp is reported as a
+> deleted account. Covered by `crates/bw-core/tests/sync_service_tests.rs`.
 
 ### Problem
 The `_force` parameter is accepted but ignored:

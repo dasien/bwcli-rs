@@ -342,7 +342,7 @@ fn get_session(global_args: &GlobalArgs) -> anyhow::Result<&str> {
 }
 
 // Helper to create vault service
-fn create_vault_service(ctx: &AppContext) -> VaultService {
+pub(crate) fn create_vault_service(ctx: &AppContext) -> VaultService {
     let account_manager = Arc::new(AccountManager::new(ctx.storage()));
 
     VaultService::new(
@@ -354,7 +354,7 @@ fn create_vault_service(ctx: &AppContext) -> VaultService {
 }
 
 // Helper to create write service
-fn create_write_service(ctx: &AppContext, no_interaction: bool) -> WriteService {
+pub(crate) fn create_write_service(ctx: &AppContext, no_interaction: bool) -> WriteService {
     let account_manager = Arc::new(AccountManager::new(ctx.storage()));
     let cipher_service = Arc::new(CipherService::new(Arc::new(ctx.sdk().clone())));
     let validation_service = Arc::new(ValidationService::new());
@@ -412,8 +412,15 @@ fn merge_cipher_views(existing: CipherView, updates: CipherView) -> CipherView {
         card: updates.card.or(existing.card),
         identity: updates.identity.or(existing.identity),
         ssh_key: updates.ssh_key.or(existing.ssh_key),
+        // Cipher types added in SDK 3.0.
+        bank_account: updates.bank_account.or(existing.bank_account),
+        drivers_license: updates.drivers_license.or(existing.drivers_license),
+        passport: updates.passport.or(existing.passport),
 
         attachments: existing.attachments, // Preserve - separate management
+        // Decrypt-time diagnostic rather than user data; carry the existing value
+        // through rather than letting a partial update clear it.
+        attachment_decryption_failures: existing.attachment_decryption_failures,
         fields: if updates.fields.as_ref().map_or(true, |f| f.is_empty()) {
             existing.fields
         } else {

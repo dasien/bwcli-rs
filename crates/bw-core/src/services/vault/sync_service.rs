@@ -27,12 +27,15 @@ impl SyncService {
 
     /// Sync vault from server
     ///
+    /// Skips the download when the server's account revision date is no newer
+    /// than our last sync, unless `force` is set.
+    ///
     /// # Arguments
-    /// * `force` - Force full sync even if recently synced
+    /// * `force` - Sync even if the server reports no changes
     ///
     /// # Returns
     /// Last sync timestamp (ISO 8601 format)
-    pub async fn sync(&self, _force: bool) -> Result<String, VaultError> {
+    pub async fn sync(&self, force: bool) -> Result<String, VaultError> {
         // Check authentication
         if !self.api_client.is_authenticated().await {
             return Err(VaultError::NotAuthenticated);
@@ -45,6 +48,14 @@ impl SyncService {
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?
             .ok_or(VaultError::NotAuthenticated)?;
+
+        if !force && !self.needs_sync().await? {
+            // Nothing changed server-side; report the existing timestamp so
+            // callers still see when the vault was last refreshed.
+            if let Some(last_sync) = self.get_last_sync().await? {
+                return Ok(last_sync);
+            }
+        }
 
         // Fetch vault data from API using SDK API model
         let sync_response: SyncResponseModel = self
@@ -104,12 +115,82 @@ impl SyncService {
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
+        // Organizations live under the sync response's profile. Without this
+        // the key is never written and `bw list organizations` always returns
+        // an empty list.
+        let organizations_map: HashMap<String, _> = sync_data
+            .organizations
+            .into_iter()
+            .map(|o| (o.id.clone(), o))
+            .collect();
+        storage
+            .set(
+                &StorageKey::UserOrganizations.format(Some(&user_id)),
+                &organizations_map,
+            )
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
+        // Sends, keyed by id, so the SDK's Repository<Send> adapter can read them.
+        let sends_map: HashMap<String, _> = sync_data
+            .sends
+            .into_iter()
+            .filter_map(|s| s.id.map(|id| (id.to_string(), s)))
+            .collect();
+        storage
+            .set(&StorageKey::UserSends.format(Some(&user_id)), &sends_map)
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
         storage
             .set(&StorageKey::UserLastSync.format(Some(&user_id)), &now)
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
         Ok(now)
+    }
+
+    /// Whether the server has changes we don't have yet.
+    ///
+    /// Compares the account revision date against our stored `lastSync`. Errs
+    /// on the side of syncing: any missing or unparseable timestamp returns
+    /// `true`.
+    async fn needs_sync(&self) -> Result<bool, VaultError> {
+        let Some(last_sync) = self.get_last_sync().await? else {
+            return Ok(true);
+        };
+
+        let Ok(last_sync) = chrono::DateTime::parse_from_rfc3339(&last_sync) else {
+            tracing::debug!("Stored lastSync is not valid RFC3339; syncing");
+            return Ok(true);
+        };
+
+        let revision_ms: i64 = match self
+            .api_client
+            .get_with_auth(endpoints::api::ACCOUNT_REVISION_DATE)
+            .await
+        {
+            Ok(ms) => ms,
+            Err(e) => {
+                // A revision-date probe failure shouldn't block a sync.
+                tracing::debug!("Could not fetch account revision date ({e}); syncing");
+                return Ok(true);
+            }
+        };
+
+        // The server signals a deleted account with a negative timestamp.
+        if revision_ms < 0 {
+            return Err(VaultError::ApiError(
+                "This account no longer exists on the server.".to_string(),
+            ));
+        }
+
+        let Some(revision) = chrono::DateTime::from_timestamp_millis(revision_ms) else {
+            tracing::debug!("Server returned an out-of-range revision date; syncing");
+            return Ok(true);
+        };
+
+        Ok(revision > last_sync.with_timezone(&chrono::Utc))
     }
 
     /// Get last sync timestamp

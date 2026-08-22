@@ -132,6 +132,18 @@ async fn main() -> ExitCode {
         }
     };
 
+    // The SDK client starts each process with an empty key store. If a session
+    // key is available, load the user key into it so vault commands can perform
+    // crypto. Failure is not fatal here: commands that don't need crypto (config,
+    // status, generate) must still work with a stale or absent session.
+    if let Some(session) = cli.global_args.session.as_deref() {
+        if !session.is_empty() {
+            if let Err(e) = ctx.container().unlock_sdk(session).await {
+                tracing::debug!("Could not initialize SDK crypto from session: {:#}", e);
+            }
+        }
+    }
+
     // Execute command and format output
     let result = execute_command(cli.command, &cli.global_args, &ctx).await;
 

@@ -12,7 +12,9 @@
 //! Write operations require a session key for encryption - tests that need
 //! encryption pass a dummy session key.
 
-use bw_core::models::vault::{Cipher, CipherLoginView, CipherType, CipherView, Folder};
+use bw_core::models::vault::{Cipher, CipherType, CipherView, Folder};
+use bitwarden_vault::{CipherRepromptType, LoginView};
+use chrono::Utc;
 use bw_core::services::api::{BitwardenApiClient, Environment};
 use bw_core::services::create_sdk_client;
 use bw_core::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
@@ -32,29 +34,48 @@ const TEST_USER_ID: &str = "test-user-12345";
 // ============================================================================
 
 fn create_test_cipher_view() -> CipherView {
+    let now = Utc::now();
+
     CipherView {
-        id: String::new(),
+        id: None,
         organization_id: None,
         folder_id: None,
-        cipher_type: CipherType::Login,
+        collection_ids: vec![],
+        key: None,
         name: "Test Login".to_string(),
         notes: Some("Test notes".to_string()),
-        favorite: false,
-        collection_ids: vec![],
-        revision_date: String::new(),
-        creation_date: None,
-        deleted_date: None,
-        login: Some(CipherLoginView {
+        r#type: CipherType::Login,
+        login: Some(LoginView {
             username: Some("user@example.com".to_string()),
             password: Some("secure_password".to_string()),
-            uris: vec![],
+            password_revision_date: None,
+            uris: None,
             totp: None,
+            autofill_on_page_load: None,
+            fido2_credentials: None,
         }),
-        secure_note: None,
-        card: None,
         identity: None,
-        attachments: vec![],
-        fields: vec![],
+        card: None,
+        secure_note: None,
+        ssh_key: None,
+        bank_account: None,
+        drivers_license: None,
+        passport: None,
+        favorite: false,
+        reprompt: CipherRepromptType::None,
+        organization_use_totp: false,
+        edit: true,
+        permissions: None,
+        view_password: true,
+        local_data: None,
+        attachments: None,
+        attachment_decryption_failures: None,
+        fields: None,
+        password_history: None,
+        creation_date: now,
+        deleted_date: None,
+        revision_date: now,
+        archived_date: None,
     }
 }
 
@@ -186,39 +207,12 @@ async fn test_create_cipher_rejects_invalid_input() {
     ));
 }
 
-#[tokio::test]
-async fn test_create_cipher_rejects_invalid_uuid() {
-    let (
-        api_client,
-        storage,
-        cipher_service,
-        validation_service,
-        confirmation_service,
-        account_manager,
-    ) = setup_test_environment().await;
-
-    let write_service = WriteService::new(
-        api_client,
-        storage,
-        cipher_service,
-        validation_service,
-        confirmation_service,
-        account_manager,
-    );
-
-    // Create cipher with invalid folder UUID
-    let mut cipher_view = create_test_cipher_view();
-    cipher_view.folder_id = Some("not-a-uuid".to_string());
-
-    let result = write_service.create_cipher(cipher_view, "dummy").await;
-
-    // Should fail validation
-    assert!(result.is_err());
-    assert!(matches!(
-        result.unwrap_err(),
-        VaultError::ValidationError(_)
-    ));
-}
+// NOTE: `test_create_cipher_rejects_invalid_uuid` was removed here. It set
+// `cipher_view.folder_id = Some("not-a-uuid".to_string())` to assert that
+// runtime validation rejected malformed UUIDs. `CipherView::folder_id` is now
+// `Option<FolderId>`, a typed UUID newtype, so a malformed value is
+// unrepresentable and the compiler enforces the invariant the test guarded.
+// Parse-time rejection of user input belongs in the command layer instead.
 
 #[tokio::test]
 async fn test_create_cipher_rejects_field_too_long() {
@@ -439,7 +433,7 @@ async fn test_create_login_without_login_data_fails() {
     );
 
     let mut cipher_view = create_test_cipher_view();
-    cipher_view.cipher_type = CipherType::Login;
+    cipher_view.r#type = CipherType::Login;
     cipher_view.login = None; // Missing required login data
 
     let result = write_service.create_cipher(cipher_view, "dummy").await;
@@ -472,7 +466,7 @@ async fn test_create_secure_note_without_secure_note_data_fails() {
     );
 
     let mut cipher_view = create_test_cipher_view();
-    cipher_view.cipher_type = CipherType::SecureNote;
+    cipher_view.r#type = CipherType::SecureNote;
     cipher_view.login = None;
     cipher_view.secure_note = None; // Missing required secure_note data
 
@@ -506,7 +500,7 @@ async fn test_create_card_without_card_data_fails() {
     );
 
     let mut cipher_view = create_test_cipher_view();
-    cipher_view.cipher_type = CipherType::Card;
+    cipher_view.r#type = CipherType::Card;
     cipher_view.login = None;
     cipher_view.card = None; // Missing required card data
 
@@ -540,7 +534,7 @@ async fn test_create_identity_without_identity_data_fails() {
     );
 
     let mut cipher_view = create_test_cipher_view();
-    cipher_view.cipher_type = CipherType::Identity;
+    cipher_view.r#type = CipherType::Identity;
     cipher_view.login = None;
     cipher_view.identity = None; // Missing required identity data
 

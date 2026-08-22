@@ -1,8 +1,10 @@
 use super::{
     api::{BitwardenApiClient, Environment},
     create_sdk_client,
+    key_service::KeyService,
+    send_repository::JsonSendRepository,
     sdk::Client,
-    storage::JsonFileStorage,
+    storage::{AccountManager, JsonFileStorage},
 };
 use anyhow::Result;
 use std::path::PathBuf;
@@ -64,6 +66,17 @@ impl ServiceContainer {
             timeout_seconds,
         )?);
 
+        // Point the SDK's send CRUD at our state file. Without this it falls
+        // back to an in-memory database that starts empty every invocation, so
+        // `bw send list` would never return anything.
+        let account_manager = Arc::new(AccountManager::new(Arc::clone(&storage)));
+        sdk.platform()
+            .state()
+            .register_client_managed(Arc::new(JsonSendRepository::new(
+                Arc::clone(&storage),
+                Arc::clone(&account_manager),
+            )));
+
         Ok(Self {
             sdk,
             storage,
@@ -91,6 +104,22 @@ impl ServiceContainer {
     /// Use this for HTTP communication with Bitwarden servers
     pub fn api_client(&self) -> Arc<BitwardenApiClient> {
         Arc::clone(&self.api_client)
+    }
+
+    /// Load the user key into the SDK client's key store from a session key.
+    ///
+    /// The SDK client starts each process with an empty key store, so this must
+    /// run before any command performs vault crypto. Safe to call for commands
+    /// that don't need crypto — it only touches storage and the key store.
+    pub async fn unlock_sdk(&self, session_str: &str) -> Result<()> {
+        let account_manager = Arc::new(AccountManager::new(self.storage()));
+        let key_service = KeyService::new(self.storage(), account_manager);
+
+        key_service
+            .initialize_client_crypto(&self.sdk, session_str)
+            .await?;
+
+        Ok(())
     }
 }
 

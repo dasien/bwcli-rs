@@ -146,6 +146,7 @@ impl AuthService {
             &login_response.access_token,
             &login_response.refresh_token,
             login_response.key.as_deref(),
+            login_response.private_key.as_deref(),
             &kdf_config,
         )
         .await?;
@@ -564,6 +565,7 @@ impl AuthService {
     /// - `user_{id}_token_accessToken`: access token
     /// - `user_{id}_token_refreshToken`: refresh token
     /// - `user_{id}_crypto_userKey`: encrypted user key
+    /// - `user_{id}_crypto_privateKey`: account private key (wrapped by the user key)
     /// - `user_{id}_kdf_config`: KDF configuration
     async fn persist_auth_state(
         &self,
@@ -572,6 +574,7 @@ impl AuthService {
         access_token: &str,
         refresh_token: &str,
         encrypted_user_key: Option<&str>,
+        private_key: Option<&str>,
         kdf_config: &KdfConfig,
     ) -> Result<(), AuthError> {
         let mut storage = self.storage.lock().await;
@@ -609,6 +612,17 @@ impl AuthService {
             // User key is already encrypted by the server with the master key
             storage
                 .set(&StorageKey::UserKey.format(Some(user_id)), &key.to_string())
+                .await?;
+        }
+
+        // The account private key is required to initialize SDK crypto on
+        // subsequent invocations (InitUserCryptoRequest::account_cryptographic_state).
+        if let Some(key) = private_key {
+            storage
+                .set(
+                    &StorageKey::UserPrivateKey.format(Some(user_id)),
+                    &key.to_string(),
+                )
                 .await?;
         }
 

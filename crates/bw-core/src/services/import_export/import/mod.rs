@@ -5,6 +5,10 @@ pub mod validator;
 
 use crate::services::import_export::errors::ImportError;
 use async_trait::async_trait;
+use bitwarden_vault::{
+    CardView, CipherRepromptType, CipherType, CipherView, FieldType, FieldView, FolderId,
+    IdentityView, LoginUriView, LoginView, SecureNoteType, SecureNoteView,
+};
 use secrecy::Secret;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -95,6 +99,117 @@ pub struct ImportData {
     pub items: Vec<ImportItem>,
 }
 
+impl ImportItem {
+    /// Convert into a vault item ready to be created.
+    ///
+    /// Server-owned fields are placeholders; the write path overwrites them.
+    pub fn to_cipher_view(&self, folder_id: Option<FolderId>) -> CipherView {
+        let now = chrono::Utc::now();
+
+        let fields: Vec<FieldView> = self
+            .fields
+            .iter()
+            .map(|f| FieldView {
+                name: Some(f.name.clone()),
+                value: f.value.clone(),
+                r#type: match f.field_type {
+                    1 => FieldType::Hidden,
+                    2 => FieldType::Boolean,
+                    3 => FieldType::Linked,
+                    _ => FieldType::Text,
+                },
+                linked_id: None,
+            })
+            .collect();
+
+        CipherView {
+            id: None,
+            organization_id: None,
+            folder_id,
+            collection_ids: vec![],
+            key: None,
+            name: self.name.clone(),
+            notes: self.notes.clone(),
+            r#type: match self.item_type {
+                ImportItemType::Login => CipherType::Login,
+                ImportItemType::SecureNote => CipherType::SecureNote,
+                ImportItemType::Card => CipherType::Card,
+                ImportItemType::Identity => CipherType::Identity,
+            },
+            login: self.login.as_ref().map(|l| LoginView {
+                username: l.username.clone(),
+                password: l.password.clone(),
+                password_revision_date: None,
+                uris: Some(
+                    l.uris
+                        .iter()
+                        .map(|u| LoginUriView {
+                            uri: Some(u.clone()),
+                            r#match: None,
+                            uri_checksum: None,
+                        })
+                        .collect(),
+                ),
+                totp: l.totp.clone(),
+                autofill_on_page_load: None,
+                fido2_credentials: None,
+            }),
+            identity: self.identity.as_ref().map(|i| IdentityView {
+                title: i.title.clone(),
+                first_name: i.first_name.clone(),
+                middle_name: i.middle_name.clone(),
+                last_name: i.last_name.clone(),
+                address1: i.address1.clone(),
+                address2: i.address2.clone(),
+                address3: i.address3.clone(),
+                city: i.city.clone(),
+                state: i.state.clone(),
+                postal_code: i.postal_code.clone(),
+                country: i.country.clone(),
+                company: None,
+                email: i.email.clone(),
+                phone: i.phone.clone(),
+                ssn: i.ssn.clone(),
+                username: i.username.clone(),
+                passport_number: i.passport_number.clone(),
+                license_number: i.license_number.clone(),
+            }),
+            card: self.card.as_ref().map(|c| CardView {
+                cardholder_name: c.cardholder_name.clone(),
+                exp_month: c.exp_month.clone(),
+                exp_year: c.exp_year.clone(),
+                code: c.code.clone(),
+                brand: c.brand.clone(),
+                number: c.number.clone(),
+            }),
+            secure_note: matches!(self.item_type, ImportItemType::SecureNote).then_some(
+                SecureNoteView {
+                    r#type: SecureNoteType::Generic,
+                },
+            ),
+            ssh_key: None,
+            bank_account: None,
+            drivers_license: None,
+            passport: None,
+            favorite: self.favorite,
+            reprompt: CipherRepromptType::None,
+            organization_use_totp: false,
+            edit: true,
+            permissions: None,
+            view_password: true,
+            local_data: None,
+            attachments: None,
+            attachment_decryption_failures: None,
+            fields: (!fields.is_empty()).then_some(fields),
+            password_history: None,
+            creation_date: now,
+            deleted_date: None,
+            revision_date: now,
+            archived_date: None,
+        }
+    }
+}
+
 /// Import options
 #[derive(Debug, Clone)]
 pub struct ImportOptions {
@@ -178,13 +293,45 @@ impl ImportService {
         Self { parsers }
     }
 
-    /// Import data from file
+    /// Read, parse and validate an import file.
+    ///
+    /// Does not touch the vault — callers create the items. Split out from
+    /// [`Self::import`] so the CLI can turn the parsed data into real vault
+    /// entries.
+    pub async fn parse_file(
+        &self,
+        format: &str,
+        file_path: &str,
+        options: ImportOptions,
+    ) -> Result<ImportData, ImportError> {
+        self.read_parse_validate(format, file_path, options).await
+    }
+
+    /// Parse and validate an import file, reporting what *would* be created.
+    ///
+    /// Note this does not write to the vault; use [`Self::parse_file`] plus the
+    /// vault write path for that.
     pub async fn import(
         &self,
         format: &str,
         file_path: &str,
         options: ImportOptions,
     ) -> Result<ImportResult, ImportError> {
+        let import_data = self.read_parse_validate(format, file_path, options).await?;
+
+        Ok(ImportResult {
+            items_created: import_data.items.len(),
+            folders_created: import_data.folders.len(),
+            format: format.to_string(),
+        })
+    }
+
+    async fn read_parse_validate(
+        &self,
+        format: &str,
+        file_path: &str,
+        options: ImportOptions,
+    ) -> Result<ImportData, ImportError> {
         // Check file size
         const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100MB
         let metadata = std::fs::metadata(file_path)?;
@@ -208,16 +355,19 @@ impl ImportService {
         // Parse data
         let import_data = parser.parse(&data, &options).await?;
 
+        // An empty or header-only file parses cleanly into zero items, which
+        // would otherwise be reported as a successful import of nothing.
+        if import_data.items.is_empty() && import_data.folders.is_empty() {
+            return Err(ImportError::ParseError(format!(
+                "no data found in import file '{}'",
+                file_path
+            )));
+        }
+
         // Validate
         validator::validate(&import_data)?;
 
-        // TODO: Transform to CipherView and create in vault
-        // For now, just return a placeholder result
-        Ok(ImportResult {
-            items_created: import_data.items.len(),
-            folders_created: import_data.folders.len(),
-            format: format.to_string(),
-        })
+        Ok(import_data)
     }
 
     /// List supported import formats
