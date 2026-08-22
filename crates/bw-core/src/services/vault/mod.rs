@@ -285,13 +285,14 @@ impl VaultService {
 
     /// Get ciphers from flat storage (stored as HashMap<id, Cipher>)
     async fn get_ciphers(&self) -> Result<HashMap<String, Cipher>, VaultError> {
-        let user_id = self.get_user_id().await?;
-        let storage = self.storage.lock().await;
-        let key = StorageKey::UserCiphers.format(Some(&user_id));
-        storage
-            .get::<HashMap<String, Cipher>>(&key)
-            .map_err(|e| Self::cache_error(&key, e))?
-            .ok_or(VaultError::NotSynced)
+        Ok(self
+            .repository::<Cipher>()?
+            .list()
+            .await
+            .map_err(|e| Self::repository_error("ciphers", e))?
+            .into_iter()
+            .filter_map(|c| c.id.map(|id| (id.to_string(), c)))
+            .collect())
     }
 
     /// Encrypted ciphers as stored, excluding trash.
@@ -325,15 +326,37 @@ impl VaultService {
         ))
     }
 
-    /// Get folders from flat storage (stored as HashMap<id, Folder>)
+    /// Get folders from the SDK's state repository, keyed by id.
     async fn get_folders(&self) -> Result<HashMap<String, Folder>, VaultError> {
-        let user_id = self.get_user_id().await?;
-        let storage = self.storage.lock().await;
-        let key = StorageKey::UserFolders.format(Some(&user_id));
-        storage
-            .get::<HashMap<String, Folder>>(&key)
-            .map_err(|e| Self::cache_error(&key, e))?
-            .ok_or(VaultError::NotSynced)
+        Ok(self
+            .repository::<Folder>()?
+            .list()
+            .await
+            .map_err(|e| Self::repository_error("folders", e))?
+            .into_iter()
+            .filter_map(|f| f.id.map(|id| (id.to_string(), f)))
+            .collect())
+    }
+
+    /// A state repository, which is where `sync` writes and reads come from.
+    ///
+    /// Ciphers and folders live here rather than in `data.json`; collections,
+    /// organizations and sends have no repository item yet and still do not.
+    fn repository<T: bitwarden_state::repository::RepositoryItem>(
+        &self,
+    ) -> Result<std::sync::Arc<dyn bitwarden_state::repository::Repository<T>>, VaultError> {
+        self.sdk
+            .platform()
+            .state()
+            .get::<T>()
+            .map_err(|e| VaultError::StorageError(e.to_string()))
+    }
+
+    /// Turn a repository read failure into something actionable.
+    fn repository_error(what: &str, e: impl std::fmt::Display) -> VaultError {
+        VaultError::StorageError(format!(
+            "local {what} could not be read ({e}). Run 'bw sync --force' to refresh them."
+        ))
     }
 
     /// Get collections from flat storage (stored as HashMap<id, Collection>)

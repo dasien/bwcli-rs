@@ -228,8 +228,56 @@ Ordered so correctness work lands on a green build, before the large migration.
       Chrome device.
       Note: **tokens no longer live in `data.json`.** Existing logins must
       re-run `bw login`; see step 9.
-- [ ] **9. Remaining:** one-time `data.json` importer; `generate` parity,
-      `config server`, `clap_complete`, `bitwarden-cli` color.
+- [x] **9. One-time `data.json` carry-over.** Done, and it recovers a login
+      without a re-login: verified against a real install whose tokens were
+      stranded in `data.json` by step 8. `bw status` went from
+      `unauthenticated` to `locked`, then `bw sync` renewed from the carried-over
+      refresh token and succeeded.
+      Runs automatically at startup, guarded on `is_authenticated`, so it is a
+      no-op once migrated and needs no flag. Never overwrites an existing SDK
+      setting; never removes or overwrites a `data.json` value, though it does
+      *add* `activeAccountId` and a registry email when absent, because
+      `data.json` still namespaces sends, collections, organizations and last-sync
+      by user and eight call sites would otherwise be unable to find the account
+      it just migrated.
+      Account selection is, in order: the user id SDK state already names,
+      `activeAccountId`, then the sole token holder. The first rule is a safety
+      rule, not a convenience — with a conflicting `activeAccountId` it prevents
+      pairing one account's tokens with another's cryptographic state. It also
+      resolves the real-world case that motivated it: two accounts holding
+      refresh tokens and no active account, which the sole-holder rule alone
+      refuses to guess at.
+      The carried-over token is recorded as already expired so the first request
+      renews rather than sending a stale one. The vault is not carried over —
+      `bw sync` rebuilds it, avoiding the shape mismatches that made the formats
+      incompatible. The session cannot carry over; `bw unlock` mints a new one.
+- [ ] **10. Remaining:** `generate` parity, `config server`, `clap_complete`,
+      `bitwarden-cli` color.
+
+## Two more SDK landmines (2026-08-22)
+
+- **`initialize_user_crypto` clobbers `USER_LOGIN_METHOD`.** It unconditionally
+  writes `UserLoginMethod::Username { client_id: "" }`
+  (`bitwarden-core/src/key_management/crypto.rs:403`). Once the SDK owns tokens
+  this is destructive twice over: it blanks the `client_id` renewal must send,
+  and for an API-key login it discards the client secret those tokens are
+  re-minted from. `bw unlock` runs through `initialize_crypto`, so **an unlock
+  would have silently broken token renewal** — the same `invalid_request` failure
+  we had just fixed, reintroduced from a different direction. Found by reading a
+  real `user.sqlite`, which had `client_id: ""` sitting in it.
+  `sdk_session::initialize_crypto` now snapshots the login method and restores it
+  afterwards, treating a blank `client_id` as absent. Two tests cover it; both
+  fail without the restore.
+
+- **`bw list folders` and `bw export` read a store `sync` no longer writes.**
+  Step 4 moved `sync` to write ciphers and folders into the SQLite repositories,
+  but `VaultService::get_ciphers`/`get_folders` still read the `data.json` keys.
+  `bw list items` hid it by going through `CiphersClient::list`. So `list folders`
+  failed with "Vault not synced" and `export` (which uses `encrypted_ciphers`)
+  was broken too. My step-4 verification checked `list items` and the write path
+  and reported a folder count read straight from the repository — never the
+  command. Both now read the repository. Verified: `list folders` returns the
+  folder, `export` returns 11 items and 1 folder.
 
 ## Bugs found and fixed along the way
 

@@ -260,3 +260,83 @@ async fn unlocking_sets_the_user_id_so_encryption_works() {
         .await
         .expect("encryption should work after unlocking");
 }
+
+/// `initialize_user_crypto` overwrites `USER_LOGIN_METHOD` with
+/// `client_id: ""` (bitwarden-core `crypto.rs:403`). Since `bw unlock` runs
+/// through `initialize_crypto`, an unlock would otherwise blank the `client_id`
+/// the token handler sends on renewal — the exact failure that made every
+/// refresh return `invalid_request` before.
+#[tokio::test]
+async fn initializing_crypto_leaves_a_usable_login_method() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = client_in(dir.path()).await;
+
+    establish(&client).await;
+
+    let method = client
+        .platform()
+        .state()
+        .setting(bitwarden_core::client::persisted_state::USER_LOGIN_METHOD)
+        .unwrap()
+        .get()
+        .await
+        .unwrap()
+        .expect("a login method should be stored");
+
+    match method {
+        bitwarden_core::client::login_method::UserLoginMethod::Username { client_id, .. } => {
+            assert_eq!(client_id, "cli", "the client id must survive initialize_crypto");
+        }
+        other => panic!("expected a password login method, got {other:?}"),
+    }
+}
+
+/// An API-key login method must survive an unlock intact: it carries the client
+/// secret those tokens are re-minted from, and `initialize_user_crypto` would
+/// otherwise replace the whole variant with a password one, losing it for good.
+#[tokio::test]
+async fn initializing_crypto_preserves_an_api_key_login_method() {
+    use bitwarden_core::client::login_method::UserLoginMethod;
+
+    let dir = tempfile::tempdir().unwrap();
+    let client = client_in(dir.path()).await;
+
+    sdk_session::persist_tokens(
+        &client,
+        UserLoginMethod::ApiKey {
+            client_id: "user.1234".into(),
+            client_secret: "the-secret".into(),
+            email: TEST_EMAIL.into(),
+            kdf: kdf(),
+        },
+        "access",
+        None,
+        3600,
+    )
+    .await
+    .unwrap();
+
+    establish(&client).await;
+
+    let method = client
+        .platform()
+        .state()
+        .setting(bitwarden_core::client::persisted_state::USER_LOGIN_METHOD)
+        .unwrap()
+        .get()
+        .await
+        .unwrap()
+        .unwrap();
+
+    match method {
+        UserLoginMethod::ApiKey {
+            client_id,
+            client_secret,
+            ..
+        } => {
+            assert_eq!(client_id, "user.1234");
+            assert_eq!(client_secret, "the-secret");
+        }
+        other => panic!("the API key login method was replaced by {other:?}"),
+    }
+}

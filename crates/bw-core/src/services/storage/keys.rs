@@ -25,6 +25,10 @@ pub enum StorageKey {
     /// Currently active user ID (or null)
     GlobalActiveAccountId,
 
+    /// Per-server environment config written by the TypeScript CLI. Read only
+    /// by the one-time `data.json` carry-over, to recover self-hosted URLs.
+    GlobalConfigByServer,
+
     // ============================================
     // User-namespaced keys (require user ID)
     // ============================================
@@ -112,6 +116,7 @@ impl StorageKey {
             Self::GlobalAppId => "global_applicationId_appId".to_string(),
             Self::GlobalAccounts => "global_account_accounts".to_string(),
             Self::GlobalActiveAccountId => "global_account_activeAccountId".to_string(),
+            Self::GlobalConfigByServer => "global_config_byServer".to_string(),
             Self::DeviceId => "global_deviceId".to_string(),
             Self::SessionKeyHint => "sessionKeyHint".to_string(),
 

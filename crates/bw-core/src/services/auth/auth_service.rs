@@ -25,11 +25,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-/// OAuth client id the CLI authenticates as. The token handler sends this on
-/// every renewal; a mismatch with the login request is rejected as
-/// `invalid_request`.
-const CLI_CLIENT_ID: &str = "cli";
-
 /// Token lifetime to record, in seconds.
 ///
 /// `expires_in` is defaulted rather than required, so that an informational
@@ -170,7 +165,7 @@ impl AuthService {
         sdk_session::persist_tokens(
             &self.sdk,
             UserLoginMethod::Username {
-                client_id: CLI_CLIENT_ID.to_string(),
+                client_id: sdk_session::CLI_CLIENT_ID.to_string(),
                 email: email.clone(),
                 kdf,
             },

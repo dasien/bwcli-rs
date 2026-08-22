@@ -70,6 +70,11 @@ impl ServiceContainer {
             create_sdk_client_with_state(api_url.clone(), identity_url.clone(), appdata_dir)
                 .await?;
 
+        // An install that predates SQLite state keeps its login in `data.json`,
+        // where nothing reads it any more. Carry it over before anything asks
+        // whether we are authenticated. No-op once migrated, and never fatal.
+        crate::services::state_import::migrate_if_needed(&sdk, &storage).await;
+
         // Sends still read and write the legacy JSON store: nothing populates the
         // SQLite `Send` table yet, because sync writes to data.json. Registering
         // a client-managed repository takes precedence over the SDK-managed one,

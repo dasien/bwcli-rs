@@ -47,11 +47,20 @@ pub async fn initialize_crypto(
     let user_id = UserId::from_str(user_id)
         .map_err(|_| anyhow::anyhow!("'{user_id}' is not a valid user id"))?;
 
-    client
+    // `initialize_user_crypto` unconditionally overwrites USER_LOGIN_METHOD with
+    // `UserLoginMethod::Username { client_id: "" }` (crypto.rs:403). That is
+    // destructive for us in two ways: it blanks the `client_id` the token
+    // handler sends on renewal, and for an API-key login it throws away the
+    // client secret those tokens are re-minted from. Since `bw unlock` runs
+    // through here, without this an unlock would quietly break token renewal.
+    // So snapshot the login method and put it back.
+    let previous = read_login_method(client).await;
+
+    let result = client
         .crypto()
         .initialize_user_crypto(InitUserCryptoRequest {
             user_id: Some(user_id),
-            kdf_params: kdf,
+            kdf_params: kdf.clone(),
             email: email.to_string(),
             account_cryptographic_state: WrappedAccountCryptographicState::V1 { private_key },
             method: InitUserCryptoMethod::DecryptedKey {
@@ -60,7 +69,50 @@ pub async fn initialize_crypto(
             upgrade_token: None,
         })
         .await
-        .context("could not initialize the vault's encryption keys")
+        .context("could not initialize the vault's encryption keys");
+
+    // Restore what we had, or — on a first login, where there was nothing to
+    // snapshot — write a correct password login method rather than leaving the
+    // SDK's blank one behind.
+    let restored = previous.unwrap_or(UserLoginMethod::Username {
+        client_id: CLI_CLIENT_ID.to_string(),
+        email: email.to_string(),
+        kdf,
+    });
+    if let Err(e) = write_login_method(client, restored).await {
+        tracing::warn!("Could not restore the login method after initializing crypto: {e:#}");
+    }
+
+    result
+}
+
+/// The `client_id` the CLI authenticates as, and the one renewal must send.
+pub const CLI_CLIENT_ID: &str = "cli";
+
+async fn read_login_method(client: &Client) -> Option<UserLoginMethod> {
+    client
+        .platform()
+        .state()
+        .setting(USER_LOGIN_METHOD)
+        .ok()?
+        .get()
+        .await
+        .ok()
+        .flatten()
+        // A blank client_id is the SDK's placeholder, not a real login method;
+        // treat it as absent so it gets replaced rather than preserved.
+        .filter(|m| !matches!(m, UserLoginMethod::Username { client_id, .. } if client_id.is_empty()))
+}
+
+async fn write_login_method(client: &Client, login_method: UserLoginMethod) -> Result<()> {
+    client
+        .platform()
+        .state()
+        .setting(USER_LOGIN_METHOD)
+        .context("no user_login_method setting")?
+        .update(login_method)
+        .await
+        .context("could not persist the login method")
 }
 
 /// Persist what a later `unlock` needs to rebuild this session.
@@ -136,16 +188,11 @@ pub async fn persist_tokens(
     refresh_token: Option<&str>,
     expires_in: u64,
 ) -> Result<()> {
-    let state = client.platform().state();
+    write_login_method(client, login_method).await?;
 
-    state
-        .setting(USER_LOGIN_METHOD)
-        .context("no user_login_method setting")?
-        .update(login_method)
-        .await
-        .context("could not persist the login method")?;
-
-    state
+    client
+        .platform()
+        .state()
         .setting(AUTHENTICATION_TOKENS)
         .context("no authentication_tokens setting")?
         .update(AuthenticationTokens {
