@@ -46,7 +46,7 @@ left alone.
 | S7 | `CipherPermissions` is `deny_unknown_fields`, rejects TS-CLI data | Won't fix |
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 
-**bwcli-rs** — 1 open, 28 fixed.
+**bwcli-rs** — 1 open, 29 fixed.
 
 | | Bug | Status |
 |---|---|---|
@@ -55,6 +55,7 @@ left alone.
 | C24 | `bw get org` should be `bw get organization` | Fixed |
 | C25 | `bw encode` required an argument instead of reading stdin | Fixed |
 | C28 | `bw unlock --raw` printed the whole blurb, not the session key | Fixed |
+| C29 | A session key reached a pushed branch as a **filename** | Fixed |
 | C26 | String payloads were JSON-quoted, breaking `$(bw get password …)` | Fixed |
 | C1 | `bw export --format json` emits invalid JSON | Fixed |
 | C2 | Self-hosted URLs persisted but never read back | Fixed |
@@ -341,6 +342,53 @@ found in a single afternoon of live testing after C12 made errors legible.
   paths. Same principle as [C26](#c26-string-payloads-were-json-quoted-breaking-every-bw--capture):
   `--raw` and stdout are for machines, prose is for people. **Fixed**, test
   `unlock_raw_does_not_emit_the_instructional_blurb`.
+
+#### C29. A session key reached a pushed branch as a filename
+- **Not a product bug** — a process failure, logged here because it is the most
+  serious thing that happened in this work and the near-misses are instructive.
+- **What happened:** a file named
+  `:BW_SESSION="pQEEAlCZune…"` — the key in the *filename*, the file itself empty —
+  was created by a stray `:` turning an `export BW_SESSION="…"` into a shell
+  redirect, then swept in by `git add -A`. It rode along in 11 commits from
+  `d97821e` and was **pushed to `origin`**.
+- **Caught by:** the repository owner reading the branch, not by any check.
+- **Why the pre-push scan missed it — two independent near-misses:**
+  1. It searched file *contents*: `git grep`, and `git log -p | grep '^\+.*BW_SESSION'`.
+     A filename appears only in the `diff --git` header, which does not start with
+     `+`, so the pattern could not match.
+  2. The tracked-file check was `git ls-files | grep -iE "…|bwsession"` — and
+     `bwsession` does not match `BW_SESSION`. It looked like path coverage and was
+     not.
+  `.gitignore` would not have helped either: it listed `*.bwsession`, not this
+  shape. Three layers that each appeared to cover it.
+- **Remediation, in the order it matters:**
+  1. **Rotate first.** The owner had already logged out and back in, which
+     invalidates `session_protected_user_key`, so the leaked envelope was dead
+     before the history was touched. Deleting a secret does not un-leak it.
+  2. **Rewrite, do not just delete.** Removing the file in a new commit would have
+     left it reachable in `d97821e` for anyone cloning. Used
+     `git filter-branch --index-filter` over `master..HEAD`, then force-pushed with
+     `--force-with-lease`.
+  3. Verified the rewrite was surgical: 17 commits before and after, identical
+     subjects, and `git diff` between old and new tips showed *only* the removed
+     path with no other file changed.
+  4. Dropped `refs/original`, expired the reflog, and `gc --prune=now`, so the blob
+     is unreachable locally too. **Note:** GitHub may retain the old objects,
+     addressable by SHA, until its own GC — which is precisely why step 1 comes
+     first.
+- **A trap worth knowing:** the first rewrite attempt silently did *nothing* and
+  reported `Ref … is unchanged`. The filename begins with `:`, which git parses as
+  **pathspec magic**, so `git rm --cached -- ':BW_SESSION="…"'` matched no file.
+  `--` stops option parsing but not magic parsing; `:(literal)` is what disables it.
+  A no-op rewrite that exits successfully is exactly the failure you would not
+  notice.
+- **Fix:** `scripts/check-secrets.sh` checks **paths before contents**, in the
+  working tree, the index, or every commit in a range. It matches the session-key
+  CBOR prefix (`pQEEAl…`), JWT shapes, `BW_SESSION` followed by a long token, and
+  the local-state filenames. Verified against the real case: staging a file with
+  that exact name fails the check. Also added `user.sqlite`, `*.sqlite` and the
+  journal/WAL patterns to `.gitignore` — `user.sqlite` now holds the live tokens
+  and the sealed user key, which the old ignore list predated.
 
 #### C24. `bw get org` should be `bw get organization`
 - **Command:** `bw get organization <id>`

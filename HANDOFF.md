@@ -211,6 +211,25 @@ to after any destructive test:
 Never commit a session key or token. Export `BW_SESSION` in the shell; do not put
 it in a file in the repo.
 
+**Run the check before you push:**
+
+```bash
+scripts/check-secrets.sh              # working tree and index
+scripts/check-secrets.sh master..HEAD # every commit on the branch
+```
+
+It checks **paths before contents**, which is the lesson from `BUGLIST.md` C29: a
+session key once reached a pushed branch as a *filename* (`:BW_SESSION="pQEEAl…"`,
+from a stray `:` turning an `export` into a redirect, then `git add -A`), and a
+contents-only scan cannot see that.
+
+If a secret does reach a pushed branch: **rotate it first** (`bw lock` invalidates
+every outstanding session), then rewrite history — deleting it in a new commit
+leaves it reachable forever. `git filter-branch --index-filter` over `master..HEAD`
+then `git push --force-with-lease`. If the path begins with `:`, use a
+`:(literal)` pathspec, or git treats it as pathspec magic and the rewrite silently
+does nothing while reporting success.
+
 ## 5. Read these, in this order
 
 | File | What it gives you |
