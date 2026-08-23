@@ -46,11 +46,12 @@ left alone.
 | S7 | `CipherPermissions` is `deny_unknown_fields`, rejects TS-CLI data | Won't fix |
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 
-**bwcli-rs** — 1 open, 22 fixed.
+**bwcli-rs** — 1 open, 23 fixed.
 
 | | Bug | Status |
 |---|---|---|
 | C23 | `bw move` collides with the TS CLI's org-share command | **Open** |
+| C24 | `bw get org` should be `bw get organization` | Fixed |
 | C1 | `bw export --format json` emits invalid JSON | Fixed |
 | C2 | Self-hosted URLs persisted but never read back | Fixed |
 | C3 | `bw restore` took a bare id; `bw move` could not clear a folder | Fixed |
@@ -215,7 +216,7 @@ found in a single afternoon of live testing after C12 made errors legible.
 #### C23. `bw move` collides with the TypeScript CLI's org-share command
 - **Command:** `bw move <id> <folderId>` (ours) vs `bw move <id> <organizationId> [encodedJson]` (theirs)
 - **Location:** `crates/bw-cli/src/commands/vault.rs` — `MoveCommand`
-- **What happens:** in the TypeScript CLI, `move` is **an alias for `share`** —
+- **What happens:** in the TypeScript CLI, `move` is the org-share command —
   `vault.program.ts:31` is literally `this.shareCommand("move", false)`, described
   as *"Move an item to an organization."* Folder changes there are done by editing
   the item's `folderId` via `bw edit item`; there is no folder-move command at all.
@@ -223,6 +224,12 @@ found in a single afternoon of live testing after C12 made errors legible.
   TS CLI would hand us an organization id where we expect a folder, and we would
   either fail with "Folder not found" or, worse, match nothing and silently do
   something unintended.
+- **Re-verified** against a current checkout (CLI `v2026.8.0`, HEAD `cce8a34`,
+  2026-08-22) after the first read was against a possibly-stale one. It holds, and
+  it is *worse* than first written: `share` is the **deprecated** alias
+  (`shareCommand("share", true)`, described `--DEPRECATED See "bw move" for the
+  current implementation--`), so `move` is the **canonical, current** name for
+  org-share. This is not a legacy name we can quietly keep.
 - **Correction:** [C3](#c3-bw-restore-took-a-bare-id-bw-move-could-not-clear-a-folder)
   originally described this as merely a required-vs-optional argument difference.
   That was wrong, and I had asserted the TS CLI's `move` semantics from memory.
@@ -230,16 +237,33 @@ found in a single afternoon of live testing after C12 made errors legible.
   is what corrected it. The optional-argument half was real and is fixed; the name
   collision is the larger issue and is still open.
 - **Proposed fix:** needs a product decision, so deliberately not made here.
-  Either (a) implement `move`/`share` with the TS meaning and drop our
-  folder-move — folder changes go through `bw edit item`, matching them; or
-  (b) keep folder semantics under a different name (`bw move-to-folder`) and
-  leave `move` for the eventual org-share. (a) is the parity-correct answer; (b)
-  preserves a genuinely convenient command this CLI added.
-- **Status:** **Open**, awaiting a decision on which name wins. Related: `share`
-  is already on the missing-commands list, and both need organization key
-  handling.
+  Either (a) implement `move` with the TS meaning and move our folder semantics to
+  another name — folder changes then go through `bw edit item`, matching them; or
+  (b) keep folder semantics on `move` as a deliberate divergence and accept that
+  TS scripts calling `move` misbehave. Now that `move` is known to be the
+  canonical org-share name rather than a legacy alias, (a) is the parity-correct
+  answer and (b) is hard to defend.
+- **Status:** **Open**, awaiting a decision on which name wins. Both directions
+  need organization key handling, which nothing in the CLI does yet.
 
 ### Fixed
+
+#### C24. `bw get org` should be `bw get organization`
+- **Command:** `bw get organization <id>`
+- **Location:** `bw-cli/src/commands/vault.rs` — `GetCommands::Organization`
+- **What happened:** the object was registered as `#[command(name = "org")]`, but
+  the TypeScript CLI's `getObjects` list (`vault.program.ts`) spells it
+  `organization`. Same class as [C3](#c3-bw-restore-took-a-bare-id-bw-move-could-not-clear-a-folder):
+  a TS-compatible script fails at argument parsing, before anything happens.
+- **Found by:** diffing our `get`/`list`/`create`/`edit`/`delete` object lists
+  against the ones extracted from `vault.program.ts`, once a current checkout was
+  available. Not from a report — it would have sat there indefinitely.
+- **Fix:** primary name is now `organization`, with `org` kept as a clap alias
+  because this CLI shipped with `org` as the only name and breaking it buys
+  nothing. **Fixed**, test `get_accepts_the_typescript_organization_object`.
+- **Related gaps found in the same pass, features rather than bugs** (tracked in
+  the parity matrix, not here): `get notes` and `get send` are missing objects,
+  and `archive` and `report` are missing commands.
 
 #### C1. `bw export --format json` emitted invalid JSON
 - **Command:** `bw export --format json > vault.json`
@@ -531,7 +555,14 @@ they are worth the same scrutiny.
   worse, and reframed the whole interop question (S7).
 - **Asserted a TS CLI command's semantics from memory.** C3 originally claimed
   `bw move`'s only problem was a required-vs-optional argument. In the TypeScript
-  CLI, `move` is an alias for `share` and takes an *organization* id — a name
+  CLI, `move` is the org-share command and takes an *organization* id — a name
   collision with different meaning, which is a much bigger problem than the one I
   wrote down (now C23). The local `Bitwarden/clients` checkout settles questions
   like this in seconds; parity claims should be read out of it, not recalled.
+- **Then trusted a checkout without checking its age.** Having been told the
+  checkout "could be very old", re-reading it at `v2026.8.0` found three further
+  errors in the parity matrix — `device-approval` listed as a missing OSS command
+  when it does not exist there at all, and `archive` and `report` missing from the
+  matrix entirely — plus C24. Both the *fact* and the *freshness of the source*
+  need checking; the matrix now records the commit it was derived from so the
+  question is answerable next time.

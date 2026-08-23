@@ -150,3 +150,17 @@ fn export_keeps_status_off_stdout() {
         .stdout(predicate::str::contains("Exported").not())
         .stdout(predicate::str::contains("item(s)").not());
 }
+
+/// The TypeScript CLI's object name is `organization` (`getObjects` in
+/// `vault.program.ts`); ours shipped as `org` only, so TS-compatible scripts hit
+/// a clap error. Both must work now.
+#[test]
+fn get_accepts_the_typescript_organization_object() {
+    for object in ["organization", "org"] {
+        let mut cmd = Command::cargo_bin("bw").unwrap();
+        cmd.args(["get", object, "--help"]);
+        cmd.assert()
+            .success()
+            .stdout(predicate::str::contains("Usage:"));
+    }
+}

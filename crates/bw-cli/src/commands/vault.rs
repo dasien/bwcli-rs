@@ -96,7 +96,10 @@ pub enum GetCommands {
     /// Get collection
     Collection(GetCollectionCommand),
     /// Get organization
-    #[command(name = "org")]
+    ///
+    /// The TypeScript CLI's object name is `organization`; `org` stays as an
+    /// alias because this CLI shipped with it as the only name.
+    #[command(name = "organization", alias = "org")]
     Organization(GetOrganizationCommand),
     /// Get item template
     Template(GetTemplateCommand),

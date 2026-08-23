@@ -72,24 +72,66 @@ higher-level bookkeeping. Two smaller gaps had to be worked around:
 
 Revisit if those types get exported.
 
-## TS-CLI parity matrix (as of 2026-08-22)
+## TS-CLI parity matrix
 
-Top-level commands the TS CLI has and we do not:
-`completion`, `device-approval`, `sdk-version`, `serve`, `share`, `update`.
+**Source of truth:** read out of `~/Source/repos/Bitwarden/clients` at CLI
+`v2026.8.0` (HEAD `cce8a34`, 2026-08-22) — `apps/cli/src/program.ts`,
+`vault.program.ts`, `tools/send/send.program.ts`, `serve.program.ts`,
+`dirt/report.program.ts`. The previous version of this matrix was written from
+recollection and got two things wrong; see the corrections below. **Re-derive it
+from the checkout rather than editing it by hand.**
 
-Ours that exist but are stubs:
-`config`, `decrypt` (not a TS command at all — candidate for removal),
-`confirm`, `login sso`, `list org-collections`, `list org-members`,
-`create attachment`, `create org-collection`, `edit item-collections`,
-`edit org-collection`, `delete attachment`, `delete org-collection`,
-`get attachment|collection|org|exposed|fingerprint`, file Sends,
+Top-level commands the OSS TypeScript CLI has and we do not:
+
+| Command | Notes |
+|---|---|
+| `archive` | `bw archive item <id>`. Paired with `restore`, whose description is now "Restores an object from the trash **or archive**". A whole feature we do not model. |
+| `report` | `bw report password-health`, with `--no-check-exposed`. Overlaps our `get exposed`, which only checks one password. |
+| `serve` | Local HTTP API. |
+| `completion` | Shell completion; `clap_complete` would supply it. |
+| `update` | Self-update check. |
+| `sdk-version` | Prints the bundled SDK version. |
+| `share` | **Deprecated** alias of `move`; low value on its own. |
+
+Object-level gaps:
+
+| | TypeScript CLI | Ours |
+|---|---|---|
+| `get` | adds `notes`, `send` | missing both. `FieldType::Notes` already exists in `bw-core`, so `get notes` is small. |
+| `list` | `items folders collections org-collections org-members organizations` | all present; `org-collections`/`org-members` are stubs |
+| `create` | `item attachment folder org-collection` | `attachment`, `org-collection` are stubs |
+| `edit` | `item item-collections folder org-collection` | `item-collections`, `org-collection` are stubs |
+| `delete` | `item attachment folder org-collection` | `attachment`, `org-collection` are stubs |
+| `restore` | `item` | matches (fixed; was a bare id) |
+| `archive` | `item` | command absent |
+
+Ours that exist but are stubs: `config`, `confirm`, `login sso`,
+`list org-collections|org-members`, `create attachment|org-collection`,
+`edit item-collections|org-collection`, `delete attachment|org-collection`,
+`get attachment|collection|organization|exposed|fingerprint`, file Sends,
 org import/export.
+
+Ours that are not TypeScript CLI commands at all: `decrypt` (stubbed — candidate
+for removal).
 
 Working: `login` (password + API key, 2FA, new-device OTP), `logout`, `lock`,
 `unlock`, `status`, `sync`, `list items|folders|collections|organizations`,
 `get item|username|password|uri|totp|folder|template`, `create item|folder`,
-`edit item|folder`, `delete item|folder`, `restore`, `move`, `generate`,
+`edit item|folder`, `delete item|folder`, `restore item`, `move`, `generate`,
 `encode`, `import`, `export`, text Sends, `receive`.
+
+**Corrections to the earlier matrix** (both were memory, not source):
+
+- **`device-approval` is not an OSS CLI command.** It appears nowhere in
+  `apps/cli/src`. Presumably commercial-only; it should never have been on the
+  missing list.
+- **`move` is not a folder command.** `vault.program.ts:31` registers it as
+  `this.shareCommand("move", false)` — "Move an item to an organization" — and
+  `share` is the *deprecated* alias of it. Folder changes in the TypeScript CLI go
+  through `bw edit item` with a changed `folderId`; there is no folder-move
+  command. Our `bw move <id> <folderId>` therefore collides with the canonical
+  name for org-share. Tracked as `BUGLIST.md` C23; needs a decision.
+- **`archive` and `report` were missing from the matrix entirely.**
 
 ## Superseded: deferred decision on the on-disk state format
 
