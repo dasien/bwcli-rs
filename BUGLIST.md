@@ -262,12 +262,21 @@ found in a single afternoon of live testing after C12 made errors legible.
   made it fatal and three of them failed with `Missing private key`.
   `share_cipher` instead pre-flights the specific key it needs and says what to do
   if it is absent.
-- **Limits — read before trusting this:** the org-share path is **not verified
-  end to end.** The test vault has no organizations, so what has been exercised
-  live is argument parsing, collection-id decoding, the missing-key pre-flight,
-  the invalid-id and unknown-item errors, and `move-to-folder`. The re-encryption
-  and `PUT` are covered only by the SDK's own tests, not by ours against a real
-  server. **Needs a vault with an organization to confirm.**
+- **Verified end to end** against a real organization ("Rust Test Org"), after an
+  earlier round could only cover argument parsing and error paths because the test
+  vault had none:
+  - `sync` persisted the organization key, and `bw list collections` decrypted
+    `Default collection` — the name only decrypts if the key genuinely reached the
+    key store, which is stronger evidence than the key merely being stored.
+  - `echo '["<collection-id>"]' | bw encode | bw move <id> <org-id>` returned the
+    item with `organizationId` and `collectionIds` set, and its username and
+    password still correct — so the re-encryption preserved the payload.
+  - A **fresh invocation** read it back decrypted, so the repository write and the
+    org-key restore-on-unlock both work, not just the in-process state.
+  - It survived `bw sync --force`, i.e. the server has it, and it shows up in
+    `bw list items` as an organization item.
+  - Re-sharing it was refused with "this item already belongs to an organization".
+  - Cleanup left the vault at its original 11 items, 1 folder, empty trash.
 - **Tests:** `move_shares_into_an_organization`, `share_is_an_alias_for_move`,
   `move_to_folder_accepts_a_missing_folder`, `move_rejects_a_bare_item_and_folder_pair`,
   `the_sync_response_yields_organization_keys`,

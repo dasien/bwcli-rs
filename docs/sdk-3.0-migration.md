@@ -107,6 +107,12 @@ Object-level gaps:
 | `restore` | `item` | matches (fixed; was a bare id) |
 | `archive` | `item` | command absent |
 
+Two stubs became cheap once organization keys started loading, because the data
+they need is now decrypted locally: `get organization` (already in the `data.json`
+organization map) and `get collection` (`bw list collections` decrypts these
+today, so `get` is a lookup over the same list). Both still return
+"Not yet implemented".
+
 Ours that exist but are stubs: `config`, `confirm`, `login sso`,
 `list org-collections|org-members`, `create attachment|org-collection`,
 `edit item-collections|org-collection`, `delete attachment|org-collection`,
@@ -122,10 +128,9 @@ Working: `login` (password + API key, 2FA, new-device OTP), `logout`, `lock`,
 `edit item|folder`, `delete item|folder`, `restore item`, `generate`, `encode`,
 `import`, `export`, text Sends, `receive`, `move-to-folder`.
 
-`move` / `share` (org-share) is implemented but **unverified against a real
-organization** — the test vault has none. Organization keys now reach the key
-store via `sync`, which also means organization-owned items can decrypt for the
-first time; that is equally unverified for the same reason.
+`move` / `share` (org-share) works, verified end to end against a real
+organization. Organization keys now reach the key store via `sync`, which is also
+what lets organization-owned items and collection names decrypt at all.
 
 **Corrections to the earlier matrix** (both were memory, not source):
 
@@ -137,8 +142,7 @@ first time; that is equally unverified for the same reason.
   `share` is the *deprecated* alias of it. Folder changes in the TypeScript CLI go
   through `bw edit item` with a changed `folderId`; there is no folder-move
   command. **Resolved:** `move` is now org-share, `share` is an alias, and our
-  folder move is `move-to-folder`. See `BUGLIST.md` C23 — including the caveat
-  that org-share is unverified against a real organization.
+  folder move is `move-to-folder`. See `BUGLIST.md` C23.
 - **`archive` and `report` were missing from the matrix entirely.**
 
 ## Superseded: deferred decision on the on-disk state format
