@@ -91,13 +91,15 @@ Top-level commands the OSS TypeScript CLI has and we do not:
 | `completion` | Shell completion; `clap_complete` would supply it. |
 | `update` | Self-update check. |
 | `sdk-version` | Prints the bundled SDK version. |
-| `share` | **Deprecated** alias of `move`; low value on its own. |
+
 
 Object-level gaps:
 
 | | TypeScript CLI | Ours |
 |---|---|---|
 | `get` | adds `notes`, `send` | missing both. `FieldType::Notes` already exists in `bw-core`, so `get notes` is small. |
+| `move` | `<id> <organizationId> [encodedJson]` | matches now (was a folder move; see `BUGLIST.md` C23) |
+| `share` | deprecated alias of `move` | accepted as an alias |
 | `list` | `items folders collections org-collections org-members organizations` | all present; `org-collections`/`org-members` are stubs |
 | `create` | `item attachment folder org-collection` | `attachment`, `org-collection` are stubs |
 | `edit` | `item item-collections folder org-collection` | `item-collections`, `org-collection` are stubs |
@@ -117,8 +119,13 @@ for removal).
 Working: `login` (password + API key, 2FA, new-device OTP), `logout`, `lock`,
 `unlock`, `status`, `sync`, `list items|folders|collections|organizations`,
 `get item|username|password|uri|totp|folder|template`, `create item|folder`,
-`edit item|folder`, `delete item|folder`, `restore item`, `move`, `generate`,
-`encode`, `import`, `export`, text Sends, `receive`.
+`edit item|folder`, `delete item|folder`, `restore item`, `generate`, `encode`,
+`import`, `export`, text Sends, `receive`, `move-to-folder`.
+
+`move` / `share` (org-share) is implemented but **unverified against a real
+organization** — the test vault has none. Organization keys now reach the key
+store via `sync`, which also means organization-owned items can decrypt for the
+first time; that is equally unverified for the same reason.
 
 **Corrections to the earlier matrix** (both were memory, not source):
 
@@ -129,8 +136,9 @@ Working: `login` (password + API key, 2FA, new-device OTP), `logout`, `lock`,
   `this.shareCommand("move", false)` — "Move an item to an organization" — and
   `share` is the *deprecated* alias of it. Folder changes in the TypeScript CLI go
   through `bw edit item` with a changed `folderId`; there is no folder-move
-  command. Our `bw move <id> <folderId>` therefore collides with the canonical
-  name for org-share. Tracked as `BUGLIST.md` C23; needs a decision.
+  command. **Resolved:** `move` is now org-share, `share` is an alias, and our
+  folder move is `move-to-folder`. See `BUGLIST.md` C23 — including the caveat
+  that org-share is unverified against a real organization.
 - **`archive` and `report` were missing from the matrix entirely.**
 
 ## Superseded: deferred decision on the on-disk state format

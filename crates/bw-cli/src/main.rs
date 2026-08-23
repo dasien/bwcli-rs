@@ -79,7 +79,15 @@ enum Commands {
 
     #[command(subcommand)]
     Restore(commands::RestoreCommands),
+    /// Move an item to an organization
+    ///
+    /// `share` is accepted as an alias, and is deprecated in the TypeScript CLI
+    /// for the same reason: `move` is the current name.
+    #[command(alias = "share")]
     Move(commands::MoveCommand),
+    /// Move an item to a folder (not a TypeScript CLI command)
+    #[command(name = "move-to-folder")]
+    MoveToFolder(commands::MoveToFolderCommand),
     Confirm(commands::ConfirmCommand),
 
     /// Sync vault with server
@@ -207,7 +215,7 @@ fn needs_unlocked_vault(command: &Commands) -> bool {
     use Commands::*;
 
     match command {
-        List(_) | Get(_) | Create(_) | Edit(_) | Delete(_) | Restore(_) | Move(_) | Sync(_)
+        List(_) | Get(_) | Create(_) | Edit(_) | Delete(_) | Restore(_) | Move(_) | MoveToFolder(_) | Sync(_)
         | Import(_) | Export(_) | Send(_) | Confirm(_) => true,
 
         Login(_) | Logout(_) | Lock(_) | Unlock(_) | Status(_) | Config(_) | Generate(_)
@@ -234,6 +242,7 @@ async fn execute_command(
         Delete(cmd) => commands::execute_delete(cmd, global_args, ctx).await,
         Restore(cmd) => commands::execute_restore(cmd, global_args, ctx).await,
         Move(cmd) => commands::execute_move(cmd, global_args, ctx).await,
+        MoveToFolder(cmd) => commands::execute_move_to_folder(cmd, global_args, ctx).await,
         Confirm(cmd) => commands::execute_confirm(cmd, global_args, ctx).await,
         Sync(cmd) => commands::execute_sync(cmd, global_args, ctx).await,
         Generate(cmd) => commands::execute_generate(cmd, global_args, ctx).await,

@@ -22,6 +22,13 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const TEST_USER_ID: &str = "11111111-1111-4111-8111-111111111111";
 const TEST_ORG_ID: &str = "22222222-2222-4222-8222-222222222222";
 
+/// A structurally valid `UnsignedSharedKey` (RSA-OAEP-SHA1, type 4). It is not
+/// wrapped to any real key, so it parses but would not decrypt — enough to prove
+/// the key is *extracted* from the profile, which is the part that was missing.
+fn org_key() -> String {
+    format!("4.{}", "A".repeat(342))
+}
+
 /// A sync response carrying one organization on the profile and no vault items.
 fn sync_response_with_org() -> serde_json::Value {
     serde_json::json!({
@@ -37,6 +44,7 @@ fn sync_response_with_org() -> serde_json::Value {
                 {
                     "object": "profileOrganization",
                     "id": TEST_ORG_ID,
+                    "key": org_key(),
                     "name": "Acme Corp",
                     "enabled": true,
                     "status": 2,
@@ -275,5 +283,76 @@ async fn negative_revision_date_reports_deleted_account() {
     assert!(
         err.to_string().contains("no longer exists"),
         "unexpected error: {err}"
+    );
+}
+
+
+/// The organization key has to come out of the sync response's profile, or
+/// organization-owned items cannot be decrypted and nothing can be shared *into*
+/// an organization — the share re-encrypts under that key. Nothing extracted it
+/// before, so `bw move` would have failed at encryption time.
+#[test]
+fn the_sync_response_yields_organization_keys() {
+    let response: bitwarden_api_api::models::SyncResponseModel =
+        serde_json::from_value(sync_response_with_org()).unwrap();
+
+    let parsed = bw_core::models::vault::parse_sync_response(response).unwrap();
+
+    assert_eq!(parsed.organizations.len(), 1);
+    assert_eq!(
+        parsed.organization_keys.len(),
+        1,
+        "the profile's organization key must be extracted"
+    );
+    assert!(
+        parsed
+            .organization_keys
+            .contains_key(&TEST_ORG_ID.parse().unwrap())
+    );
+}
+
+/// An unreadable organization key must not fail the whole sync: that
+/// organization's items stay undecryptable, which is no worse than before and far
+/// better than refusing to sync anything.
+#[test]
+fn an_unreadable_organization_key_is_skipped_not_fatal() {
+    let mut body = sync_response_with_org();
+    body["profile"]["organizations"][0]["key"] = serde_json::json!("not-a-key");
+    let response: bitwarden_api_api::models::SyncResponseModel =
+        serde_json::from_value(body).unwrap();
+
+    let parsed = bw_core::models::vault::parse_sync_response(response)
+        .expect("a bad organization key must not fail the sync");
+
+    assert_eq!(parsed.organizations.len(), 1, "the organization is still listed");
+    assert!(parsed.organization_keys.is_empty());
+}
+
+/// An organization key that cannot be *unwrapped* (no private key in the store,
+/// which is any locked or partially unlocked vault) must not fail the sync
+/// either. `sync` is how a bad local state gets repaired, so it has to survive
+/// one. This is the flaw the pre-existing sync tests caught when the load was
+/// first written as fatal.
+#[tokio::test]
+async fn a_key_that_cannot_be_unwrapped_does_not_fail_the_sync() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/sync"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(sync_response_with_org()))
+        .mount(&server)
+        .await;
+
+    let (service, storage, _tmp) = setup(&server, None).await;
+
+    // The fixture's key is well-formed but wrapped to nothing, and the test
+    // client has no private key, so unwrapping must fail.
+    service.sync(true).await.expect("sync should still succeed");
+
+
+    assert_eq!(
+        stored_organizations(&storage).await.len(),
+        1,
+        "the organization is still recorded for `bw list organizations`"
     );
 }

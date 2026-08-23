@@ -7,6 +7,7 @@ use super::errors::VaultError;
 use crate::models::vault::parse_sync_response;
 use crate::services::storage::{AccountManager, JsonFileStorage, Storage, StorageKey};
 use bitwarden_core::Client;
+use bitwarden_core::key_management::crypto::InitOrgCryptoRequest;
 use bitwarden_vault::{Cipher, Folder};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -125,6 +126,36 @@ impl SyncService {
             )
             .await
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
+        // Load the organization keys into the SDK key store, and persist them for
+        // later unlocks. Without this, organization-owned items cannot be
+        // decrypted and nothing can be *shared into* an organization, because the
+        // share re-encrypts the item under the organization's key.
+        //
+        // `initialize_org_crypto` does both halves: the key store now, and the
+        // `OrganizationSharedKey` repository that `UnlockClient::unlock` reads on
+        // subsequent invocations.
+        // Best-effort, deliberately: unwrapping these needs the user's private
+        // key, so an incompletely unlocked vault would otherwise make `sync`
+        // fail — and `sync` is how you recover from a bad local state. Failing
+        // here leaves organization items undecryptable, which is what they
+        // already were; failing the whole sync would also lose the personal
+        // vault. `share_cipher` checks for the key it needs and says what to do.
+        if !sync_data.organization_keys.is_empty()
+            && let Err(e) = self
+                .sdk
+                .crypto()
+                .initialize_org_crypto(InitOrgCryptoRequest {
+                    organization_keys: sync_data.organization_keys.clone(),
+                })
+                .await
+        {
+            tracing::warn!(
+                "Could not load organization keys ({e}); organization items will not \
+                 decrypt and items cannot be shared into an organization. Unlock the \
+                 vault and sync again."
+            );
+        }
 
         // Organizations live under the sync response's profile. Without this
         // the key is never written and `bw list organizations` always returns

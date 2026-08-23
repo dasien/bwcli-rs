@@ -46,12 +46,15 @@ left alone.
 | S7 | `CipherPermissions` is `deny_unknown_fields`, rejects TS-CLI data | Won't fix |
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 
-**bwcli-rs** — 1 open, 23 fixed.
+**bwcli-rs** — 1 open, 27 fixed.
 
 | | Bug | Status |
 |---|---|---|
-| C23 | `bw move` collides with the TS CLI's org-share command | **Open** |
+| C27 | `bw get template` needs an unlocked vault | **Open** |
+| C23 | `bw move` collided with the TS CLI's org-share command | Fixed |
 | C24 | `bw get org` should be `bw get organization` | Fixed |
+| C25 | `bw encode` required an argument instead of reading stdin | Fixed |
+| C26 | String payloads were JSON-quoted, breaking `$(bw get password …)` | Fixed |
 | C1 | `bw export --format json` emits invalid JSON | Fixed |
 | C2 | Self-hosted URLs persisted but never read back | Fixed |
 | C3 | `bw restore` took a bare id; `bw move` could not clear a folder | Fixed |
@@ -213,40 +216,101 @@ found in a single afternoon of live testing after C12 made errors legible.
 
 ### Open
 
-#### C23. `bw move` collides with the TypeScript CLI's org-share command
-- **Command:** `bw move <id> <folderId>` (ours) vs `bw move <id> <organizationId> [encodedJson]` (theirs)
-- **Location:** `crates/bw-cli/src/commands/vault.rs` — `MoveCommand`
-- **What happens:** in the TypeScript CLI, `move` is the org-share command —
-  `vault.program.ts:31` is literally `this.shareCommand("move", false)`, described
-  as *"Move an item to an organization."* Folder changes there are done by editing
-  the item's `folderId` via `bw edit item`; there is no folder-move command at all.
-  Ours takes a **folder** id in the same position. So a script written against the
-  TS CLI would hand us an organization id where we expect a folder, and we would
-  either fail with "Folder not found" or, worse, match nothing and silently do
-  something unintended.
-- **Re-verified** against a current checkout (CLI `v2026.8.0`, HEAD `cce8a34`,
-  2026-08-22) after the first read was against a possibly-stale one. It holds, and
-  it is *worse* than first written: `share` is the **deprecated** alias
-  (`shareCommand("share", true)`, described `--DEPRECATED See "bw move" for the
-  current implementation--`), so `move` is the **canonical, current** name for
-  org-share. This is not a legacy name we can quietly keep.
-- **Correction:** [C3](#c3-bw-restore-took-a-bare-id-bw-move-could-not-clear-a-folder)
-  originally described this as merely a required-vs-optional argument difference.
-  That was wrong, and I had asserted the TS CLI's `move` semantics from memory.
-  Reading the actual `vault.program.ts` in the local `Bitwarden/clients` checkout
-  is what corrected it. The optional-argument half was real and is fixed; the name
-  collision is the larger issue and is still open.
-- **Proposed fix:** needs a product decision, so deliberately not made here.
-  Either (a) implement `move` with the TS meaning and move our folder semantics to
-  another name — folder changes then go through `bw edit item`, matching them; or
-  (b) keep folder semantics on `move` as a deliberate divergence and accept that
-  TS scripts calling `move` misbehave. Now that `move` is known to be the
-  canonical org-share name rather than a legacy alias, (a) is the parity-correct
-  answer and (b) is hard to defend.
-- **Status:** **Open**, awaiting a decision on which name wins. Both directions
-  need organization key handling, which nothing in the CLI does yet.
+#### C27. `bw get template` needs an unlocked vault
+- **Command:** `bw get template item`
+- **Location:** `bw-cli/src/main.rs` — `needs_unlocked_vault`
+- **What happens:** the whole `get` family is classified as needing an unlocked
+  vault, but templates are static JSON compiled into the binary. So
+  `bw get template item` fails with *"Vault is locked"* when it needs nothing from
+  the vault at all. The TypeScript CLI's `get template` requires no session.
+- **Found by:** writing a test that wanted a JSON document from a command needing
+  no credentials, and finding `get template` could not supply one.
+- **Proposed fix:** classify `Get(GetCommands::Template(_))` as not needing an
+  unlocked vault, alongside `receive`, which is already excluded for the same reason.
+- **Status:** **Open.** Cosmetic in effect — the workaround is to unlock — but it
+  makes `bw get template item | bw create item` need a session for the template
+  half, which is the pipeline C13 exists to protect.
 
 ### Fixed
+
+#### C23. `bw move` collided with the TypeScript CLI's org-share command
+- **Command:** `bw move <id> <organizationId> [encodedJson]`
+- **Location:** `bw-cli/src/commands/vault.rs`, `bw-core/src/services/vault/write_service.rs`,
+  `bw-core/src/services/vault/sync_service.rs`, `bw-core/src/models/vault/sync_response.rs`
+- **What happened:** in the TypeScript CLI `move` shares an item into an
+  organization (`vault.program.ts:31` registers it as `shareCommand("move",
+  false)`; `share` is the *deprecated* alias). Ours read a **folder** id in the
+  organization slot, so a TS-compatible script would hand us an organization id
+  where we expected a folder.
+- **Fix:** `move` is now org-share, implemented on the SDK's public
+  `CiphersClient::share_cipher` — which reassigns the item, carries password
+  history across, re-encrypts under the organization key, `PUT`s, and updates the
+  repository. `share` is accepted as an alias, as upstream does. Our folder move
+  became `bw move-to-folder <id> [folderId]`, which is not a TypeScript CLI
+  command and says so in its help. **Fixed.**
+- **Prerequisite that was missing:** sharing re-encrypts under the organization's
+  key, and **nothing ever put organization keys in the key store.** `sync` parsed
+  organizations for `bw list organizations` but dropped `profile.organizations[].key`
+  on the floor, so `share_cipher` would have failed at encryption time. `sync` now
+  extracts those keys and calls `crypto().initialize_org_crypto`, which loads them
+  and persists them to `OrganizationSharedKey` for later unlocks. This also means
+  organization-owned *items* can decrypt for the first time.
+- **Deliberately non-fatal:** unwrapping an organization key needs the user's
+  private key, so a locked or partially unlocked vault cannot do it. That failure
+  is logged and sync continues — `sync` is how a bad local state gets repaired, so
+  it must survive one. The pre-existing sync tests caught this: the first version
+  made it fatal and three of them failed with `Missing private key`.
+  `share_cipher` instead pre-flights the specific key it needs and says what to do
+  if it is absent.
+- **Limits — read before trusting this:** the org-share path is **not verified
+  end to end.** The test vault has no organizations, so what has been exercised
+  live is argument parsing, collection-id decoding, the missing-key pre-flight,
+  the invalid-id and unknown-item errors, and `move-to-folder`. The re-encryption
+  and `PUT` are covered only by the SDK's own tests, not by ours against a real
+  server. **Needs a vault with an organization to confirm.**
+- **Tests:** `move_shares_into_an_organization`, `share_is_an_alias_for_move`,
+  `move_to_folder_accepts_a_missing_folder`, `move_rejects_a_bare_item_and_folder_pair`,
+  `the_sync_response_yields_organization_keys`,
+  `an_unreadable_organization_key_is_skipped_not_fatal`,
+  `a_key_that_cannot_be_unwrapped_does_not_fail_the_sync`, and five on
+  collection-id parsing.
+
+#### C25. `bw encode` required an argument instead of reading stdin
+- **Command:** `echo '[...]' | bw encode`
+- **Location:** `bw-cli/src/commands/tools.rs` — `EncodeCommand`
+- **What happened:** ours took a required positional `<DATA>`. The TypeScript
+  CLI's `encode` takes **no argument at all** — its description is literally
+  "Base 64 encode stdin" — and its own help pipes it into `create`, `edit` and
+  `move`. So the documented pipeline failed with a clap usage error.
+- **Found by:** running `bw encode | bw move` while verifying C23. The feature was
+  unusable in exactly the way its documentation describes.
+- **Fix:** `<DATA>` is optional and stdin is read when omitted, with the trailing
+  newline trimmed — encoding a shell's newline changes the base64 the next
+  command receives. The positional stays, since this CLI shipped with it as the
+  only form. **Fixed**, tests `encode_reads_stdin`,
+  `encode_still_accepts_an_argument`.
+
+#### C26. String payloads were JSON-quoted, breaking every `$(bw ...)` capture
+- **Commands:** `bw get password|username|uri|totp`, `bw generate`, `bw encode`
+- **Location:** `bw-cli/src/output/formatter.rs` — `print_human`
+- **What happened:** human mode pretty-printed the payload as JSON regardless of
+  type, so a string came out **wrapped in double quotes**:
+  `PASS=$(bw get password <id>)` yielded `"hunter2"`, quotes included. `bw generate`
+  the same. The TypeScript CLI prints string payloads bare — `base-program.ts`:
+  for a `string` response, `out = data`, with no JSON encoding.
+- **Severity:** the worst of the parity bugs found. It silently corrupts the most
+  common scripted use of the CLI, and `--raw` masked it (`print_raw_value` already
+  printed strings bare), so anyone who hit it would likely have worked around it
+  rather than reported it.
+- **Found by:** the `bw encode | bw move` pipeline still failing after C25 —
+  `Invalid symbol 34` is a `"`. Chasing one broken pipe found the general bug.
+- **Fix:** `print_human` prints `Value::String` bare and keeps pretty-printing
+  everything else. **Fixed.**
+- **Verified live:** `bw generate` and `bw get password` now emit bare values,
+  `bw encode | bw move` runs end to end, and `status`, `list items`, `get item`
+  and `get template` still emit parseable JSON.
+- **Tests:** `string_output_is_not_json_quoted`,
+  `generate_output_is_not_json_quoted`, `document_output_is_still_json`.
 
 #### C24. `bw get org` should be `bw get organization`
 - **Command:** `bw get organization <id>`

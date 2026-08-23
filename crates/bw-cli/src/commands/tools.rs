@@ -49,9 +49,11 @@ pub struct GenerateCommand {
 
 #[derive(Args)]
 pub struct EncodeCommand {
-    /// Data to encode
+    /// Data to encode. Read from stdin when omitted, which is the TypeScript
+    /// CLI's only form ("Base 64 encode stdin") and the one its own docs pipe
+    /// into `create`, `edit` and `move`.
     #[arg(value_name = "DATA")]
-    pub data: String,
+    pub data: Option<String>,
 }
 
 #[derive(Args)]
@@ -204,7 +206,19 @@ pub async fn execute_encode(
 ) -> anyhow::Result<Response> {
     use base64::{Engine as _, engine::general_purpose};
 
-    let encoded = general_purpose::STANDARD.encode(&cmd.data);
+    let data = match cmd.data {
+        Some(data) => data,
+        None => {
+            use std::io::Read;
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            // A trailing newline from the shell is not part of the payload, and
+            // encoding it changes the base64 the next command receives.
+            buf.trim_end_matches(['\n', '\r']).to_string()
+        }
+    };
+
+    let encoded = general_purpose::STANDARD.encode(&data);
 
     if global_args.response {
         Ok(Response::success_json(serde_json::json!({

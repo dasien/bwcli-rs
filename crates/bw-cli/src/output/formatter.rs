@@ -83,10 +83,20 @@ fn print_human(response: &Response) {
     match response {
         Response::Success(s) => {
             if let Some(data) = &s.data {
-                // Pretty-print data by default in human mode
-                match serde_json::to_string_pretty(data) {
-                    Ok(json) => println!("{}", json),
-                    Err(e) => eprintln!("Error formatting response: {}", e),
+                match data {
+                    // A string payload is printed bare, never JSON-encoded. This
+                    // is what the TypeScript CLI does (`base-program.ts`: for a
+                    // `string` response, `out = data`), and it is the difference
+                    // between `bw get password <id>` yielding `hunter2` and
+                    // yielding `"hunter2"` — quotes and all — inside `$(...)`.
+                    // It is also what makes `bw encode | bw move` work.
+                    Value::String(text) => println!("{}", text),
+                    // Everything else is a document, and pretty-printing it is
+                    // the point of human mode.
+                    other => match serde_json::to_string_pretty(other) {
+                        Ok(json) => println!("{}", json),
+                        Err(e) => eprintln!("Error formatting response: {}", e),
+                    },
                 }
             } else if let Some(msg) = &s.message {
                 println!("{}", msg);

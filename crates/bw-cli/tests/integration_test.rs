@@ -124,17 +124,60 @@ fn restore_rejects_a_bare_id() {
     cmd.assert().failure();
 }
 
-/// `bw move <id>` with no folder removes the item from all folders. The bulk
-/// move endpoint takes `None` for exactly this, but the argument used to be
-/// required, so there was no way to ask for it.
+/// `bw move` is the TypeScript CLI's org-share command:
+/// `bw move <id> <organizationId> [encodedJson]`.
 #[test]
-fn move_accepts_a_missing_folder() {
+fn move_shares_into_an_organization() {
     let mut cmd = Command::cargo_bin("bw").unwrap();
     cmd.args(["move", "--help"]);
 
     cmd.assert()
         .success()
+        .stdout(predicate::str::contains("<ORGANIZATION_ID>"))
+        .stdout(predicate::str::contains("[ENCODED_JSON]"))
+        .stdout(predicate::str::contains("[FOLDER_ID]").not());
+}
+
+/// `share` is the TypeScript CLI's deprecated alias for `move`.
+#[test]
+fn share_is_an_alias_for_move() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.args(["share", "--help"]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("<ORGANIZATION_ID>"));
+}
+
+/// Folder moves live under their own name now, with the folder optional so an
+/// item can be removed from all folders — which `move_many(ids, None)` supports.
+#[test]
+fn move_to_folder_accepts_a_missing_folder() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.args(["move-to-folder", "--help"]);
+
+    cmd.assert()
+        .success()
         .stdout(predicate::str::contains("[FOLDER_ID]"));
+}
+
+/// The old two-positional folder form must not silently keep working under
+/// `move`: that is the collision this rename exists to remove. A folder id in
+/// the organization slot has to fail, not be accepted as an organization.
+#[test]
+fn move_rejects_a_bare_item_and_folder_pair() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.args([
+        "move",
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    ]);
+
+    // Reaches the vault (locked, or an invalid-collection error) rather than
+    // being parsed as a folder move.
+    cmd.assert()
+        .stdout(predicate::str::contains("folder").not())
+        .stderr(predicate::str::contains("folder").not());
 }
 
 /// `bw export` without `--output` must put the document on stdout and nothing
@@ -163,4 +206,66 @@ fn get_accepts_the_typescript_organization_object() {
             .success()
             .stdout(predicate::str::contains("Usage:"));
     }
+}
+
+/// The TypeScript CLI's `encode` takes no argument at all — "Base 64 encode
+/// stdin" — and its own docs pipe it into `create`, `edit` and `move`. Ours
+/// required a positional, so the documented pipeline could not run.
+#[test]
+fn encode_reads_stdin() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.arg("encode").write_stdin(r#"["abc"]"#);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("WyJhYmMiXQ=="));
+}
+
+/// The positional form stays, since this CLI shipped with it as the only form.
+#[test]
+fn encode_still_accepts_an_argument() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.args(["encode", r#"["abc"]"#]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("WyJhYmMiXQ=="));
+}
+
+/// A string payload must be printed bare, not JSON-encoded. The TypeScript CLI
+/// does this (`base-program.ts`: for a `string` response, `out = data`), and it
+/// is the difference between `PASS=$(bw get password <id>)` yielding `hunter2`
+/// and yielding `"hunter2"` — quotes included. It is also what makes
+/// `bw encode | bw move` work at all.
+#[test]
+fn string_output_is_not_json_quoted() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.arg("encode").write_stdin("abc");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::eq("YWJj\n"));
+}
+
+/// `bw generate` is the other heavily scripted string output.
+#[test]
+fn generate_output_is_not_json_quoted() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.arg("generate");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::starts_with("\"").not());
+}
+
+/// Documents must still be pretty-printed JSON; the bare-string rule is only for
+/// string payloads.
+#[test]
+fn document_output_is_still_json() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.arg("status");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::starts_with("{"));
 }

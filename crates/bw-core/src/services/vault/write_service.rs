@@ -28,7 +28,10 @@ use crate::models::vault::{CipherRequestModel, FolderRequestModel};
 use bitwarden_api_api::models::{
     CipherDetailsResponseModel, CipherResponseModel, FolderResponseModel,
 };
-use bitwarden_core::Client;
+use bitwarden_collections::collection::CollectionId;
+use bitwarden_core::client::persisted_state::OrganizationSharedKey;
+use bitwarden_core::{Client, OrganizationId};
+use bitwarden_state::repository::Repository;
 use bitwarden_vault::{
     Cipher, CipherId, CipherView, Folder, FolderId, FolderView, VaultClientExt,
 };
@@ -211,7 +214,7 @@ impl WriteService {
     }
 
     /// Move cipher to a different folder (or out of all folders)
-    pub async fn move_cipher(
+    pub async fn move_cipher_to_folder(
         &self,
         cipher_id: &str,
         folder_id: Option<&str>,
@@ -226,6 +229,92 @@ impl WriteService {
             .vault()
             .ciphers()
             .move_many(vec![cipher_id], folder_id)
+            .await
+            .map_err(|e| VaultError::ApiError(e.to_string()))
+    }
+
+    /// Share a cipher into an organization, i.e. the TypeScript CLI's `bw move`.
+    ///
+    /// This is a re-encryption, not a metadata change: the item is decrypted
+    /// under the user key and re-encrypted under the organization's key, so the
+    /// organization key has to be in the key store. `sync` puts it there.
+    ///
+    /// `CiphersClient::share_cipher` does the whole job — reassign, refresh
+    /// password history, re-encrypt, `PUT`, update the repository.
+    pub async fn share_cipher(
+        &self,
+        cipher_id: &str,
+        organization_id: &str,
+        collection_ids: Vec<String>,
+    ) -> Result<CipherView, VaultError> {
+        let cipher_id = Self::parse_cipher_id(cipher_id)?;
+        let organization_id: OrganizationId = organization_id.parse().map_err(|_| {
+            VaultError::InvalidInput(format!(
+                "'{organization_id}' is not a valid organization id"
+            ))
+        })?;
+
+        // The server requires at least one collection: an organization item with
+        // no collection would be invisible to everyone, including its owner.
+        if collection_ids.is_empty() {
+            return Err(VaultError::InvalidInput(
+                "at least one collection id is required to share an item".to_string(),
+            ));
+        }
+
+        let collection_ids = collection_ids
+            .iter()
+            .map(|id| {
+                id.parse::<CollectionId>().map_err(|_| {
+                    VaultError::InvalidInput(format!("'{id}' is not a valid collection id"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Sharing re-encrypts under the organization's key, so check we have it
+        // before doing any work. `sync` loads these best-effort, so a missing one
+        // is a plausible state with an actionable remedy rather than a bug.
+        let has_org_key = self
+            .sdk
+            .platform()
+            .state()
+            .get::<OrganizationSharedKey>()
+            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .get(organization_id)
+            .await
+            .map_err(|e| VaultError::StorageError(e.to_string()))?
+            .is_some();
+
+        if !has_org_key {
+            return Err(VaultError::InvalidInput(format!(
+                "no key for organization {organization_id}. Run 'bw sync' with the \
+                 vault unlocked; if you are not a confirmed member of that \
+                 organization, sharing into it is not possible."
+            )));
+        }
+
+        let ciphers = self.sdk.vault().ciphers();
+
+        let cipher_view = ciphers
+            .get(&cipher_id.to_string())
+            .await
+            .map_err(|_| VaultError::ItemNotFound)?;
+
+        if cipher_view.organization_id.is_some() {
+            return Err(VaultError::InvalidInput(
+                "this item already belongs to an organization".to_string(),
+            ));
+        }
+
+        // The original is passed so the SDK can carry password history across the
+        // re-encryption rather than losing it.
+        ciphers
+            .share_cipher(
+                cipher_view.clone(),
+                organization_id,
+                collection_ids,
+                Some(cipher_view),
+            )
             .await
             .map_err(|e| VaultError::ApiError(e.to_string()))
     }

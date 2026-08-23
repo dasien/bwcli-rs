@@ -330,8 +330,33 @@ pub enum RestoreCommands {
     Item(RestoreItemCommand),
 }
 
+/// `bw move <id> <organizationId> [encodedJson]` — share an item into an
+/// organization.
+///
+/// This is the TypeScript CLI's `move` (`vault.program.ts` registers it as
+/// `shareCommand("move", false)`, with `share` as the deprecated alias). Folder
+/// moves live under [`MoveToFolderCommand`]; the TypeScript CLI has no
+/// folder-move command at all and expects `bw edit item` with a changed
+/// `folderId`.
 #[derive(Args)]
 pub struct MoveCommand {
+    #[arg(value_name = "ID")]
+    pub id: String,
+    #[arg(value_name = "ORGANIZATION_ID")]
+    pub organization_id: String,
+    /// Base64-encoded JSON array of collection ids. Read from stdin when omitted,
+    /// matching the TypeScript CLI.
+    #[arg(value_name = "ENCODED_JSON")]
+    pub encoded_json: Option<String>,
+}
+
+/// `bw move-to-folder <id> [folderId]` — this CLI's own command.
+///
+/// Not a TypeScript CLI command. It used to be called `move`, which collided
+/// with the org-share meaning above: a script written against the TypeScript CLI
+/// would have handed us an organization id where we read a folder id.
+#[derive(Args)]
+pub struct MoveToFolderCommand {
     #[arg(value_name = "ITEM_ID")]
     pub item_id: String,
     /// Target folder. Omit it, or pass `null`, to remove the item from all
@@ -888,9 +913,126 @@ pub async fn execute_restore(
     }
 }
 
-// Move command implementation
+/// `bw move <id> <organizationId> [encodedJson]` — share into an organization.
 pub async fn execute_move(
     cmd: MoveCommand,
+    global_args: &GlobalArgs,
+    ctx: &AppContext,
+) -> anyhow::Result<Response> {
+    let _session = get_session(global_args)?;
+    let write_service = create_write_service(ctx, global_args.nointeraction);
+
+    let collection_ids = match parse_collection_ids(cmd.encoded_json.as_deref()) {
+        Ok(ids) => ids,
+        Err(e) => return Ok(Response::error(e.to_string())),
+    };
+
+    match write_service
+        .share_cipher(&cmd.id, &cmd.organization_id, collection_ids)
+        .await
+    {
+        Ok(shared) => Ok(Response::success(shared)),
+        Err(VaultError::ItemNotFound) => {
+            Ok(Response::error(format!("Item not found: {}", cmd.id)))
+        }
+        Err(e) => Ok(Response::error(e.to_string())),
+    }
+}
+
+/// Collection ids for `bw move`, from the argument or stdin.
+///
+/// The TypeScript CLI takes a base64-encoded JSON array — its own `bw encode`
+/// output — and also accepts it piped in. Plain (unencoded) JSON is accepted too:
+/// it costs one branch and the alternative is an opaque base64 error for an
+/// input the user reasonably expected to work.
+fn parse_collection_ids(encoded: Option<&str>) -> anyhow::Result<Vec<String>> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let raw = match encoded {
+        Some(value) => value.to_string(),
+        None => {
+            use std::io::Read;
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf
+        }
+    };
+    let raw = raw.trim();
+
+    if raw.is_empty() {
+        anyhow::bail!(
+            "at least one collection id is required. Pass a base64-encoded JSON \
+             array, e.g.: echo '[\"<collection-id>\"]' | bw encode | \
+             bw move <item-id> <org-id>"
+        );
+    }
+
+    let json = if raw.starts_with('[') {
+        raw.to_string()
+    } else {
+        let bytes = STANDARD
+            .decode(raw)
+            .map_err(|e| anyhow::anyhow!("collection ids are not valid base64: {e}"))?;
+        String::from_utf8(bytes)
+            .map_err(|e| anyhow::anyhow!("collection ids are not valid UTF-8: {e}"))?
+    };
+
+    serde_json::from_str::<Vec<String>>(&json)
+        .map_err(|e| anyhow::anyhow!("collection ids are not a JSON array of strings: {e}"))
+}
+
+#[cfg(test)]
+mod collection_id_tests {
+    use super::parse_collection_ids;
+
+    const ID: &str = "974053d0-3b33-4b98-886e-fecf5c8dba96";
+
+    /// The documented form: `bw encode` output.
+    #[test]
+    fn accepts_base64_encoded_json() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let encoded = STANDARD.encode(format!("[\"{ID}\"]"));
+
+        assert_eq!(parse_collection_ids(Some(&encoded)).unwrap(), vec![ID]);
+    }
+
+    /// Tolerated because the alternative is an opaque base64 error for an input
+    /// the user reasonably expected to work.
+    #[test]
+    fn accepts_plain_json() {
+        let json = format!("[\"{ID}\"]");
+
+        assert_eq!(parse_collection_ids(Some(&json)).unwrap(), vec![ID]);
+    }
+
+    /// Piped input arrives with a trailing newline.
+    #[test]
+    fn tolerates_surrounding_whitespace() {
+        let json = format!("  [\"{ID}\"]\n");
+
+        assert_eq!(parse_collection_ids(Some(&json)).unwrap(), vec![ID]);
+    }
+
+    /// Sharing with no collection would make the item invisible to everyone,
+    /// including its owner, so this must be refused with an example rather than
+    /// passed to the server.
+    #[test]
+    fn refuses_an_empty_list_with_an_example() {
+        let err = parse_collection_ids(Some("   ")).unwrap_err().to_string();
+
+        assert!(err.contains("bw encode"), "unhelpful message: {err}");
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(parse_collection_ids(Some("not-base64-or-json!!")).is_err());
+        assert!(parse_collection_ids(Some("eyJhIjoxfQ==")).is_err(), "a JSON object is not a list");
+    }
+}
+
+/// `bw move-to-folder <id> [folderId]` — this CLI's own folder move.
+pub async fn execute_move_to_folder(
+    cmd: MoveToFolderCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
 ) -> anyhow::Result<Response> {
@@ -906,7 +1048,7 @@ pub async fn execute_move(
         .filter(|id| *id != "null" && !id.is_empty());
 
     match write_service
-        .move_cipher(&cmd.item_id, folder_id, session)
+        .move_cipher_to_folder(&cmd.item_id, folder_id, session)
         .await
     {
         Ok(()) => {
