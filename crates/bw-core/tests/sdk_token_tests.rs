@@ -16,7 +16,7 @@ use bitwarden_core::client::persisted_state::{
     AUTHENTICATION_TOKENS, USER_LOGIN_METHOD,
 };
 use bitwarden_crypto::Kdf;
-use bw_core::services::create_sdk_client_with_state;
+use bw_core::services::{create_sdk_client_with_state, open_state};
 use bw_core::services::sdk_session;
 use std::path::Path;
 use wiremock::matchers::{body_string_contains, method, path};
@@ -27,9 +27,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 ///
 /// (`https_only` is only enforced in release builds, so http:// works here.)
 async fn client_at(dir: &Path, server: &MockServer) -> bitwarden_core::Client {
-    create_sdk_client_with_state(Some(server.uri()), Some(server.uri()), dir.to_path_buf())
-        .await
-        .expect("client with state")
+    let registry = open_state(dir.to_path_buf()).await.expect("state");
+    create_sdk_client_with_state(Some(server.uri()), Some(server.uri()), registry)
 }
 
 fn password_login() -> UserLoginMethod {

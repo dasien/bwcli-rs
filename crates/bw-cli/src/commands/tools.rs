@@ -355,19 +355,38 @@ pub async fn execute_export(
         )
         .await?;
 
-    let message = match &result.output_path {
-        Some(path) => format!("Saved {} item(s) to {}", result.item_count, path),
-        None => format!("Exported {} item(s)", result.item_count),
-    };
-
+    // With `--response` the JSON is the payload, so the document belongs inside
+    // it. Writing it separately as well would put two documents on stdout.
     if global_args.response {
-        Ok(Response::success(serde_json::json!({
+        return Ok(Response::success(serde_json::json!({
             "format": result.format,
             "itemCount": result.item_count,
             "encrypted": result.encrypted,
             "output": result.output_path,
-        })))
-    } else {
-        Ok(Response::success_raw(message))
+            "data": result.contents,
+        })));
+    }
+
+    match (result.contents, &result.output_path) {
+        // Exported to stdout: the document *is* the output, so nothing else may
+        // go there. The count is progress information, and progress goes to
+        // stderr — otherwise `bw export --format json > vault.json` writes a
+        // file no JSON parser will accept.
+        (Some(contents), _) => {
+            use std::io::Write;
+            std::io::stdout().write_all(contents.as_bytes())?;
+            std::io::stdout().flush()?;
+            eprintln!("Exported {} item(s)", result.item_count);
+            Ok(Response::silent())
+        }
+        // Exported to a file: stdout carries no payload, so say what happened.
+        (None, Some(path)) => Ok(Response::success_raw(format!(
+            "Saved {} item(s) to {}",
+            result.item_count, path
+        ))),
+        (None, None) => Ok(Response::success_raw(format!(
+            "Exported {} item(s)",
+            result.item_count
+        ))),
     }
 }

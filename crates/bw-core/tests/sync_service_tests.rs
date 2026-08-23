@@ -9,7 +9,7 @@
 use bitwarden_core::client::login_method::UserLoginMethod;
 use bitwarden_crypto::Kdf;
 use bw_core::models::vault::Organization;
-use bw_core::services::create_sdk_client_with_state;
+use bw_core::services::{create_sdk_client_with_state, open_state};
 use bw_core::services::sdk_session;
 use bw_core::services::storage::{JsonFileStorage, Storage, StorageKey};
 use bw_core::services::vault::SyncService;
@@ -90,15 +90,12 @@ async fn setup(
     // SDK client must point at the mock server and hold a token in its own
     // state. (`https_only` is only enforced in release builds, so http:// works
     // here.)
-    let sdk = Arc::new(
-        create_sdk_client_with_state(
-            Some(server.uri()),
-            Some(server.uri()),
-            temp_dir.path().to_path_buf(),
-        )
-        .await
-        .unwrap(),
-    );
+    let registry = open_state(temp_dir.path().to_path_buf()).await.unwrap();
+    let sdk = Arc::new(create_sdk_client_with_state(
+        Some(server.uri()),
+        Some(server.uri()),
+        registry,
+    ));
 
     // Far-future expiry, so the token handler attaches this token rather than
     // trying to renew it against the mock server.

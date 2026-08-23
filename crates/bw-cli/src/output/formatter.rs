@@ -15,6 +15,11 @@ pub fn print_response(response: Response, args: &GlobalArgs) {
         return;
     }
 
+    // A payload already went to stdout; adding to it would corrupt it.
+    if matches!(&response, Response::Success(s) if s.silent) {
+        return;
+    }
+
     // Raw mode: minimal output
     if args.raw {
         print_raw(&response);

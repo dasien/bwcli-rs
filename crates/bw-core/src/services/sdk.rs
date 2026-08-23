@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use bitwarden_auth::token_management::PasswordManagerTokenHandler;
-use bitwarden_core::client::persisted_state::OrganizationSharedKey;
+use bitwarden_core::client::persisted_state::{BASE_URLS, BaseUrls, OrganizationSharedKey};
 use bitwarden_core::key_management::LocalUserDataKeyState;
 use bitwarden_send::Send as SendItem;
 use bitwarden_state::SettingItem;
@@ -54,7 +54,7 @@ pub fn create_sdk_client(api_url: Option<String>, identity_url: Option<String>) 
     Ok(Client::new(Some(client_settings(api_url, identity_url))))
 }
 
-/// Create the SDK client with persistent SDK-managed state.
+/// Open the SDK's state database.
 ///
 /// State lives in `{appdata}/user.sqlite`, one table per registered repository
 /// (`Cipher`, `Folder`, `Send`, `SettingItem`, `OrganizationSharedKey`). This is
@@ -65,18 +65,11 @@ pub fn create_sdk_client(api_url: Option<String>, identity_url: Option<String>) 
 /// `db_name` is fixed rather than per-user: the CLI has a single active account
 /// at a time, and `logout` wipes the registry.
 ///
-/// Authentication is [`PasswordManagerTokenHandler`], which reads and writes the
-/// `AUTHENTICATION_TOKENS` setting in that same database. It attaches the bearer
-/// token to requests the generated clients mark as authenticated, renews it
-/// proactively (5-minute margin) and once more on a 401, and serializes
-/// concurrent renewals behind a mutex. It replaces our `TokenManager`, whose
-/// hand-rolled equivalent of all three had bugs in each.
-pub async fn create_sdk_client_with_state(
-    api_url: Option<String>,
-    identity_url: Option<String>,
-    appdata_dir: PathBuf,
-) -> Result<Client> {
-    let registry = StateRegistry::new_with_db(
+/// Separate from [`create_sdk_client_with_state`] because the server URLs the
+/// client is built with are themselves *in* this database (`BASE_URLS`), so it
+/// has to be readable before the client exists.
+pub async fn open_state(appdata_dir: PathBuf) -> Result<StateRegistry> {
+    StateRegistry::new_with_db(
         DatabaseConfiguration::Sqlite {
             db_name: "user".to_string(),
             folder_path: appdata_dir,
@@ -84,13 +77,36 @@ pub async fn create_sdk_client_with_state(
         state_migrations(),
     )
     .await
-    .map_err(|e| anyhow::anyhow!("could not open the local state database: {e}"))?;
+    .map_err(|e| anyhow::anyhow!("could not open the local state database: {e}"))
+}
 
-    Ok(Client::builder()
+/// The server URLs recorded at login, if any.
+///
+/// Read back so a self-hosted user does not have to repeat `--server` on every
+/// invocation — and, more importantly, so token renewal targets the server the
+/// refresh token actually came from.
+pub async fn stored_base_urls(registry: &StateRegistry) -> Option<BaseUrls> {
+    registry.setting(BASE_URLS).ok()?.get().await.ok().flatten()
+}
+
+/// Create the SDK client over an already-open state database.
+///
+/// Authentication is [`PasswordManagerTokenHandler`], which reads and writes the
+/// `AUTHENTICATION_TOKENS` setting in that same database. It attaches the bearer
+/// token to requests the generated clients mark as authenticated, renews it
+/// proactively (5-minute margin) and once more on a 401, and serializes
+/// concurrent renewals behind a mutex. It replaces our `TokenManager`, whose
+/// hand-rolled equivalent of all three had bugs in each.
+pub fn create_sdk_client_with_state(
+    api_url: Option<String>,
+    identity_url: Option<String>,
+    registry: StateRegistry,
+) -> Client {
+    Client::builder()
         .with_settings(client_settings(api_url, identity_url))
         .with_token_handler(Arc::new(PasswordManagerTokenHandler::default()))
         .with_state(registry)
-        .build())
+        .build()
 }
 
 /// Repository tables to create in the state database.

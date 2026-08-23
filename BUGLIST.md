@@ -4,6 +4,11 @@ Everything found while migrating bwcli-rs to Bitwarden SDK 3.0.0 and going
 SDK-native, from 2026-08-20 onward. Kept as a running list: **add to it, don't
 prune it.** A bug that has been fixed is still worth keeping — several here
 recurred from a different direction, and the record is what caught them.
+Entries are corrected in place when a diagnosis turns out to be wrong, with the
+correction noted rather than the original quietly overwritten (see C3/C23).
+
+Ids are stable: a fixed bug keeps its number and moves section rather than being
+renumbered, so references from commits and code comments stay valid.
 
 Sections are grouped by where the defect lives, because that decides who can fix
 it. Within each, **Open** comes before **Fixed**.
@@ -41,13 +46,14 @@ left alone.
 | S7 | `CipherPermissions` is `deny_unknown_fields`, rejects TS-CLI data | Won't fix |
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 
-**bwcli-rs** — 3 open, 19 fixed.
+**bwcli-rs** — 1 open, 22 fixed.
 
 | | Bug | Status |
 |---|---|---|
-| C1 | `bw export --format json` emits invalid JSON | **Open** |
-| C2 | Self-hosted URLs persisted but never read back | **Open** |
-| C3 | `bw restore` / `bw move` argument shapes differ from TS CLI | **Open** |
+| C23 | `bw move` collides with the TS CLI's org-share command | **Open** |
+| C1 | `bw export --format json` emits invalid JSON | Fixed |
+| C2 | Self-hosted URLs persisted but never read back | Fixed |
+| C3 | `bw restore` took a bare id; `bw move` could not clear a folder | Fixed |
 | C4 | `bw list folders` / `bw export` read a store `sync` stopped writing | Fixed |
 | C5 | `refresh_access_token` deadlocked | Fixed |
 | C6 | Token refresh omitted `client_id` | Fixed |
@@ -206,51 +212,99 @@ found in a single afternoon of live testing after C12 made errors legible.
 
 ### Open
 
-#### C1. `bw export --format json` emits invalid JSON
-- **Command:** `bw export --format json > vault.json`
-- **Location:** `crates/bw-cli/src/commands/` export path + `output::Response`
-- **What happens:** the export document is printed, then a trailing
-  `"Exported 11 item(s)"` string. Redirecting to a file produces something no
-  JSON parser accepts (`Extra data: line 274 column 2`).
-- **Found by:** piping `bw export` into `json.load` during step-5 verification.
-- **Proposed fix:** send the success message to **stderr**, or suppress it when
-  the payload is itself the output. Same reasoning as moving tracing to stderr
-  (C16) — stdout is the data channel.
-- **Status:** **Open.** Pre-existing, not migration-related; flagged for the
-  parity pass.
-
-#### C2. Self-hosted URLs are persisted but never read back
-- **Command:** any authenticated command against a self-hosted server, run
-  without `--server`
-- **Location:** `bw-core/src/services/container.rs` — `BASE_URLS` is written by
-  `sdk_session::persist_account_state` and by the carry-over, but nothing reads
-  it when constructing the client
-- **What happens:** `ClientSettings` is built from the CLI arguments alone, so a
-  later invocation without `--server` targets Bitwarden cloud — including token
-  renewal, which would send a self-hosted refresh token to
-  `identity.bitwarden.com`.
-- **Not a regression:** the old `TokenManager` refreshed against
-  `environment.identity_url()`, which came from the same arguments. The
-  difference is that we now *store* the right answer and still ignore it.
-- **Proposed fix:** read `BASE_URLS` in `ServiceContainer::new` and use it when
-  no explicit `--server`/`--apiurl`/`--identityurl` is given; CLI arguments keep
-  precedence.
-- **Status:** **Open.** Untested against a self-hosted server — noted from
-  reading the wiring, not from a reproduction.
-
-#### C3. `bw restore` / `bw move` argument shapes diverge from the TypeScript CLI
-- **Commands:** `bw restore item <id>`, `bw move <id>` with no folder
-- **Location:** `crates/bw-cli/src/commands/` clap definitions
-- **What happens:** ours is `bw restore <id>`; the TS CLI is
-  `bw restore item <id>`, so scripts written against the TS CLI fail with a clap
-  usage error. And `bw move <id>` requires a folder argument, giving no way to
-  move an item *out* of all folders — which the underlying
-  `CiphersClient::move_many(ids, None)` supports.
-- **Proposed fix:** add the `item` subcommand level to `restore`; make `move`'s
-  folder argument optional and pass `None` through.
-- **Status:** **Open.** Found during step-5 round-trip testing.
+#### C23. `bw move` collides with the TypeScript CLI's org-share command
+- **Command:** `bw move <id> <folderId>` (ours) vs `bw move <id> <organizationId> [encodedJson]` (theirs)
+- **Location:** `crates/bw-cli/src/commands/vault.rs` — `MoveCommand`
+- **What happens:** in the TypeScript CLI, `move` is **an alias for `share`** —
+  `vault.program.ts:31` is literally `this.shareCommand("move", false)`, described
+  as *"Move an item to an organization."* Folder changes there are done by editing
+  the item's `folderId` via `bw edit item`; there is no folder-move command at all.
+  Ours takes a **folder** id in the same position. So a script written against the
+  TS CLI would hand us an organization id where we expect a folder, and we would
+  either fail with "Folder not found" or, worse, match nothing and silently do
+  something unintended.
+- **Correction:** [C3](#c3-bw-restore-took-a-bare-id-bw-move-could-not-clear-a-folder)
+  originally described this as merely a required-vs-optional argument difference.
+  That was wrong, and I had asserted the TS CLI's `move` semantics from memory.
+  Reading the actual `vault.program.ts` in the local `Bitwarden/clients` checkout
+  is what corrected it. The optional-argument half was real and is fixed; the name
+  collision is the larger issue and is still open.
+- **Proposed fix:** needs a product decision, so deliberately not made here.
+  Either (a) implement `move`/`share` with the TS meaning and drop our
+  folder-move — folder changes go through `bw edit item`, matching them; or
+  (b) keep folder semantics under a different name (`bw move-to-folder`) and
+  leave `move` for the eventual org-share. (a) is the parity-correct answer; (b)
+  preserves a genuinely convenient command this CLI added.
+- **Status:** **Open**, awaiting a decision on which name wins. Related: `share`
+  is already on the missing-commands list, and both need organization key
+  handling.
 
 ### Fixed
+
+#### C1. `bw export --format json` emitted invalid JSON
+- **Command:** `bw export --format json > vault.json`
+- **Location:** `bw-core/src/services/import_export/export/mod.rs`,
+  `bw-cli/src/commands/tools.rs`
+- **What happened:** `ExportService` wrote the document to stdout itself, then the
+  command printed `"Exported 11 item(s)"` after it. Redirecting produced a file no
+  JSON parser accepts (`Extra data: line 274 column 2`). With `--response` it was
+  worse: the document *and* the response JSON both went to stdout — two documents.
+- **Root cause, not just the symptom:** the service owned stdout. Only the command
+  knows whether stdout is the data channel for a given invocation, so that
+  decision was in the wrong place.
+- **Fix:** `export` now *returns* the document in `ExportResult::contents` when
+  there is no `--output`, and the command places it: to stdout with the count on
+  **stderr**, or inside the JSON under `--response`. A new `Response::silent()`
+  suppresses the trailing human output for commands whose payload is already on
+  stdout. **Fixed.**
+- **Verified live:** `bw export --format json > vault.json` parses cleanly (11
+  items, 1 folder) with `Exported 11 item(s)` on stderr; `--response` yields a
+  single JSON document with the export under `data.data`.
+- **Tests:** `exporting_without_a_path_returns_the_document`,
+  `exporting_to_a_path_returns_no_document`, `a_json_export_parses_on_its_own`,
+  `export_keeps_status_off_stdout`.
+
+#### C2. Self-hosted URLs were persisted but never read back
+- **Command:** any authenticated command against a self-hosted server, run
+  without `--server`
+- **Location:** `bw-core/src/services/container.rs`, `services/sdk.rs`
+- **What happened:** `BASE_URLS` was written at login and by the carry-over, but
+  the client was always built from the CLI arguments alone. A later invocation
+  without `--server` targeted Bitwarden cloud — **including token renewal, which
+  would have sent a self-hosted refresh token to `identity.bitwarden.com`.**
+- **Why it was awkward:** the URLs the client needs live in the state database the
+  client owns. Chicken and egg.
+- **Fix:** split `open_state` from `create_sdk_client_with_state`, so `BASE_URLS`
+  can be read before the client is built. Explicit arguments still win; stored
+  URLs are the fallback; cloud is the default. `resolve_environment` recovers the
+  base URL for the services `Environment` models but `BASE_URLS` does not carry
+  (icons, notifications, events), and recognises cloud's own pair rather than
+  treating `api.bitwarden.com` as a base to derive from. **Fixed.**
+- **Not verified against a real self-hosted server** — I have no instance to test
+  against. Covered by three unit tests on the resolution rules
+  (`no_urls_resolves_to_cloud`, `the_cloud_url_pair_resolves_back_to_cloud`,
+  `a_self_hosted_pair_keeps_both_urls_and_derives_the_base`), which is weaker
+  evidence than the live checks elsewhere in this file.
+
+#### C3. `bw restore` took a bare id; `bw move` could not clear a folder
+- **Commands:** `bw restore item <id>`, `bw move <id>`
+- **Location:** `bw-cli/src/commands/vault.rs`, `bw-cli/src/main.rs`
+- **What happened:** ours was `bw restore <id>`; the TypeScript CLI is
+  `bw restore <object> <id>` with `item` the only valid object
+  (`apps/cli/src/vault.program.ts:380`). Any script written against it failed with
+  a clap usage error. Separately, `bw move`'s folder argument was required, so
+  there was no way to remove an item from all folders — even though
+  `CiphersClient::move_many(ids, None)` supports exactly that, and the code already
+  translated a literal `"null"`.
+- **Fix:** `restore` gained the object level as a clap subcommand; `move`'s folder
+  argument is now optional, with a missing, empty, or `"null"` value all meaning
+  no folder. **Fixed.**
+- **Verified live:** `bw move <id> <folder>` sets `folderId`, `bw move <id>` clears
+  it to `None`, and `bw restore item <id>` un-trashes the item.
+- **Tests:** `restore_takes_an_object_argument`, `restore_rejects_a_bare_id`,
+  `move_accepts_a_missing_folder`.
+- **Follow-on:** verifying the TS CLI's actual syntax revealed that `move` means
+  something else entirely there — see [C23](#c23-bw-move-collides-with-the-typescript-clis-org-share-command).
 
 #### C4. `bw list folders` and `bw export` read a store `sync` no longer writes
 - **Commands:** `bw list folders`, `bw export`
@@ -475,3 +529,9 @@ they are worth the same scrutiny.
 - **A misdiagnosis I corrected:** I first said the unreadable `permissions.response`
   data was stale bwcli-rs output. It was **TypeScript-CLI-written** — which is
   worse, and reframed the whole interop question (S7).
+- **Asserted a TS CLI command's semantics from memory.** C3 originally claimed
+  `bw move`'s only problem was a required-vs-optional argument. In the TypeScript
+  CLI, `move` is an alias for `share` and takes an *organization* id — a name
+  collision with different meaning, which is a much bigger problem than the one I
+  wrote down (now C23). The local `Bitwarden/clients` checkout settles questions
+  like this in seconds; parity claims should be read out of it, not recalled.

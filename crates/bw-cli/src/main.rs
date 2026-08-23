@@ -77,7 +77,8 @@ enum Commands {
     #[command(subcommand)]
     Delete(commands::DeleteCommands),
 
-    Restore(commands::RestoreCommand),
+    #[command(subcommand)]
+    Restore(commands::RestoreCommands),
     Move(commands::MoveCommand),
     Confirm(commands::ConfirmCommand),
 

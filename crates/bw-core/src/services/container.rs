@@ -1,6 +1,6 @@
 use super::{
     api::{BitwardenApiClient, Environment},
-    create_sdk_client_with_state,
+    create_sdk_client_with_state, open_state, stored_base_urls,
     send_repository::JsonSendRepository,
     sdk::Client,
     storage::{AccountManager, JsonFileStorage, StoragePath},
@@ -48,27 +48,26 @@ impl ServiceContainer {
         // Create storage wrapped in Mutex since Storage trait methods need &mut self
         let storage = Arc::new(Mutex::new(JsonFileStorage::new(storage_path)?));
 
-        // Determine environment URLs
-        // Use default cloud environment if no custom URLs provided
-        let environment = match (&api_url, &identity_url) {
-            (None, None) => Environment::default_cloud(),
-            _ => {
-                let base_url = api_url
-                    .clone()
-                    .or_else(|| identity_url.clone())
-                    .unwrap_or_else(|| "https://vault.bitwarden.com".to_string());
-                Environment::from_base_url(&base_url)?
-            }
-        };
+        // Open state before resolving URLs: the ones recorded at login live in
+        // it, and both the SDK client and our own HTTP client need them.
+        let registry = open_state(appdata_dir).await?;
+
+        // Explicit arguments win; otherwise fall back to what login recorded.
+        // Without the fallback a self-hosted user who omits `--server` silently
+        // targets Bitwarden cloud — including token renewal, which would send a
+        // self-hosted refresh token to identity.bitwarden.com.
+        let stored = stored_base_urls(&registry).await;
+        let api_url = api_url.or_else(|| stored.as_ref().map(|u| u.api_url.clone()));
+        let identity_url = identity_url.or_else(|| stored.as_ref().map(|u| u.identity_url.clone()));
+
+        let environment = resolve_environment(api_url.as_deref(), identity_url.as_deref())?;
 
         // Login, prelogin and the identity endpoints only; unauthenticated.
         let api_client = Arc::new(BitwardenApiClient::new(environment, timeout_seconds)?);
 
         // The SDK owns authentication: its token handler reads and renews the
         // tokens persisted in the same state database.
-        let sdk =
-            create_sdk_client_with_state(api_url.clone(), identity_url.clone(), appdata_dir)
-                .await?;
+        let sdk = create_sdk_client_with_state(api_url, identity_url, registry);
 
         // An install that predates SQLite state keeps its login in `data.json`,
         // where nothing reads it any more. Carry it over before anything asks
@@ -127,6 +126,44 @@ impl ServiceContainer {
     }
 }
 
+/// Build the service-URL set from an api/identity pair.
+///
+/// `Environment` models more than the SDK does (icons, notifications, events,
+/// web vault), and derives them from a single base URL. A self-hosted deployment
+/// puts api and identity under one base, so recovering that base from the api URL
+/// is what lets the rest be derived.
+fn resolve_environment(api_url: Option<&str>, identity_url: Option<&str>) -> Result<Environment> {
+    let (Some(api), Some(identity)) = (api_url, identity_url) else {
+        // A single URL, or neither: the existing single-base behaviour.
+        return match api_url.or(identity_url) {
+            Some(url) => Environment::from_base_url(url),
+            None => Ok(Environment::default_cloud()),
+        };
+    };
+
+    // Cloud uses unrelated hostnames per service, so its api URL is not a base
+    // to derive anything from.
+    let cloud = Environment::default_cloud();
+    if api == cloud.api_url() && identity == cloud.identity_url() {
+        return Ok(cloud);
+    }
+
+    let base = api
+        .strip_suffix("/api")
+        .or_else(|| api.strip_suffix('/'))
+        .unwrap_or(api);
+
+    Environment::custom(
+        base,
+        Some(api.to_string()),
+        Some(identity.to_string()),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +179,41 @@ mod tests {
         )
         .await;
         assert!(container.is_ok(), "Should create service container");
+    }
+
+    /// No URLs anywhere means Bitwarden cloud, whose services live on unrelated
+    /// hostnames rather than under one base.
+    #[test]
+    fn no_urls_resolves_to_cloud() {
+        let env = resolve_environment(None, None).unwrap();
+        assert_eq!(env.api_url(), "https://api.bitwarden.com");
+        assert_eq!(env.identity_url(), "https://identity.bitwarden.com");
+    }
+
+    /// Cloud's own api/identity pair must round-trip to the cloud environment,
+    /// not get treated as a self-hosted base — `https://api.bitwarden.com` is not
+    /// a base you can derive an icons URL from.
+    #[test]
+    fn the_cloud_url_pair_resolves_back_to_cloud() {
+        let cloud = Environment::default_cloud();
+        let env = resolve_environment(Some(cloud.api_url()), Some(cloud.identity_url())).unwrap();
+        assert_eq!(env.web_vault_url(), cloud.web_vault_url());
+        assert_eq!(env.icons_url(), cloud.icons_url());
+    }
+
+    /// A self-hosted pair keeps both URLs verbatim and recovers the base for the
+    /// services `Environment` models but `BASE_URLS` does not carry.
+    #[test]
+    fn a_self_hosted_pair_keeps_both_urls_and_derives_the_base() {
+        let env = resolve_environment(
+            Some("https://vault.example.com/api"),
+            Some("https://vault.example.com/identity"),
+        )
+        .unwrap();
+
+        assert_eq!(env.api_url(), "https://vault.example.com/api");
+        assert_eq!(env.identity_url(), "https://vault.example.com/identity");
+        assert_eq!(env.icons_url(), "https://vault.example.com/icons");
     }
 
     /// The SDK's state database must actually be created on disk, otherwise

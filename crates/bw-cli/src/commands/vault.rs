@@ -313,17 +313,28 @@ pub struct DeleteOrgCollectionCommand {
 }
 
 #[derive(Args)]
-pub struct RestoreCommand {
+pub struct RestoreItemCommand {
     #[arg(value_name = "ID")]
     pub id: String,
+}
+
+/// `bw restore <object> <id>`, matching the TypeScript CLI. `item` is the only
+/// object it accepts either, but the level has to be there or scripts written
+/// against it fail with a clap usage error.
+#[derive(Subcommand)]
+pub enum RestoreCommands {
+    /// Restore a vault item from the trash
+    Item(RestoreItemCommand),
 }
 
 #[derive(Args)]
 pub struct MoveCommand {
     #[arg(value_name = "ITEM_ID")]
     pub item_id: String,
+    /// Target folder. Omit it, or pass `null`, to remove the item from all
+    /// folders.
     #[arg(value_name = "FOLDER_ID")]
-    pub folder_id: String,
+    pub folder_id: Option<String>,
 }
 
 #[derive(Args)]
@@ -850,10 +861,11 @@ pub async fn execute_delete(
 
 // Restore command implementation
 pub async fn execute_restore(
-    cmd: RestoreCommand,
+    cmd: RestoreCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
 ) -> anyhow::Result<Response> {
+    let RestoreCommands::Item(cmd) = cmd;
     let session = get_session(global_args)?;
     let write_service = create_write_service(ctx, global_args.nointeraction);
 
@@ -882,12 +894,13 @@ pub async fn execute_move(
     let session = get_session(global_args)?;
     let write_service = create_write_service(ctx, global_args.nointeraction);
 
-    // Handle "null" string to remove from folder
-    let folder_id = if cmd.folder_id == "null" {
-        None
-    } else {
-        Some(cmd.folder_id.as_str())
-    };
+    // No folder argument, or the literal `null`, means "no folder". The bulk
+    // move endpoint takes `None` for that, which is how an item gets removed
+    // from all folders.
+    let folder_id = cmd
+        .folder_id
+        .as_deref()
+        .filter(|id| *id != "null" && !id.is_empty());
 
     match write_service
         .move_cipher(&cmd.item_id, folder_id, session)
@@ -906,7 +919,7 @@ pub async fn execute_move(
         }
         Err(VaultError::FolderNotFound) => Ok(Response::error(format!(
             "Folder not found: {}",
-            cmd.folder_id
+            cmd.folder_id.as_deref().unwrap_or("(none)")
         ))),
         Err(e) => Ok(Response::error(e.to_string())),
     }

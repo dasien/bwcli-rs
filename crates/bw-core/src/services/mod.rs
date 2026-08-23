@@ -27,6 +27,6 @@ pub use container::ServiceContainer;
 pub use crypto::{decrypt_user_key, derive_master_key, hash_password_for_auth};
 pub use send_repository::JsonSendRepository;
 pub use sdk::{
-    Client, ClientSettings, DeviceType, create_sdk_client, create_sdk_client_with_state,
+    Client, ClientSettings, DeviceType, create_sdk_client, create_sdk_client_with_state, open_state, stored_base_urls,
     get_device_type,
 };

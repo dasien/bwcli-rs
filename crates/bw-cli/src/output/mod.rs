@@ -19,6 +19,10 @@ pub struct SuccessResponse {
     pub data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Suppress human and raw output entirely; see [`Response::silent`].
+    /// Not part of the wire format — `--response` output is unaffected.
+    #[serde(skip)]
+    pub silent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +38,7 @@ impl Response {
             success: true,
             data: serde_json::to_value(data).ok(),
             message: None,
+            silent: false,
         })
     }
 
@@ -43,6 +48,7 @@ impl Response {
             success: true,
             data: None,
             message: Some(message.into()),
+            silent: false,
         })
     }
 
@@ -61,6 +67,21 @@ impl Response {
             success: true,
             data: Some(Value::String(data.into())),
             message: None,
+            silent: false,
+        })
+    }
+
+    /// A success that prints nothing.
+    ///
+    /// For commands that have already written their payload to stdout and must
+    /// not add anything after it — `bw export` without `--output`, where the
+    /// export document is the whole of stdout.
+    pub fn silent() -> Self {
+        Response::Success(SuccessResponse {
+            success: true,
+            data: None,
+            message: None,
+            silent: true,
         })
     }
 
@@ -71,6 +92,7 @@ impl Response {
             success: true,
             data: Some(data),
             message: None,
+            silent: false,
         })
     }
 

@@ -8,7 +8,7 @@
 use bitwarden_core::Client;
 use bitwarden_crypto::{Kdf, MasterKey, SymmetricCryptoKey};
 use bitwarden_vault::{FolderView, VaultClientExt};
-use bw_core::services::create_sdk_client_with_state;
+use bw_core::services::{create_sdk_client_with_state, open_state};
 use bw_core::services::sdk_session;
 use chrono::Utc;
 use std::num::NonZeroU32;
@@ -22,9 +22,8 @@ const TEST_EMAIL: &str = "test@example.com";
 /// A client over `dir`. Calling this twice models two CLI invocations sharing
 /// one state directory, which is exactly how login-then-unlock behaves.
 async fn client_in(dir: &Path) -> Client {
-    create_sdk_client_with_state(None, None, dir.to_path_buf())
-        .await
-        .expect("client with state")
+    let registry = open_state(dir.to_path_buf()).await.expect("state");
+    create_sdk_client_with_state(None, None, registry)
 }
 
 fn kdf() -> Kdf {

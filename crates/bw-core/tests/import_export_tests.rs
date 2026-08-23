@@ -334,17 +334,65 @@ async fn test_export_to_json_creates_valid_output() {
     assert_eq!(json["encrypted"], false);
 }
 
+/// With no `--output`, the document is *returned* rather than printed. Only the
+/// command knows whether stdout is the data channel for this invocation; the
+/// service printing it, and the command then adding a status line, is what made
+/// `bw export --format json > vault.json` write invalid JSON.
 #[tokio::test]
-async fn test_export_to_stdout_works() {
+async fn exporting_without_a_path_returns_the_document() {
     let (service, data) = export_fixture().await;
     let options = ExportOptions::default();
 
-    // Export to stdout (no file path)
     let result = service.export("csv", None, data, options).await.unwrap();
 
     assert_eq!(result.format, "csv");
     assert_eq!(result.item_count, 5);
     assert!(result.output_path.is_none());
+
+    let contents = result
+        .contents
+        .expect("the document should come back to the caller");
+    assert!(
+        contents.contains("name") && contents.lines().count() > 1,
+        "expected CSV content, got: {contents:.200}"
+    );
+}
+
+/// Written to a file, there is nothing for the caller to place.
+#[tokio::test]
+async fn exporting_to_a_path_returns_no_document() {
+    let temp_dir = TempDir::new().unwrap();
+    let output_path = temp_dir.path().join("vault.json");
+    let (service, data) = export_fixture().await;
+
+    let result = service
+        .export(
+            "json",
+            Some(output_path.to_str().unwrap()),
+            data,
+            ExportOptions::default(),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.contents.is_none());
+    assert!(output_path.exists());
+}
+
+/// The document must be valid JSON on its own, with nothing appended.
+#[tokio::test]
+async fn a_json_export_parses_on_its_own() {
+    let (service, data) = export_fixture().await;
+
+    let result = service
+        .export("json", None, data, ExportOptions::default())
+        .await
+        .unwrap();
+
+    let contents = result.contents.unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&contents).expect("a JSON export must parse with nothing appended");
+    assert!(parsed["items"].is_array());
 }
 
 #[tokio::test]

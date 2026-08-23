@@ -9,7 +9,7 @@ use bitwarden_core::client::login_method::UserLoginMethod;
 use bitwarden_core::client::persisted_state::{
     ACCOUNT_CRYPTO_STATE, AUTHENTICATION_TOKENS, USER_EMAIL, USER_ID, USER_LOGIN_METHOD,
 };
-use bw_core::services::create_sdk_client_with_state;
+use bw_core::services::{create_sdk_client_with_state, open_state};
 use bw_core::services::sdk_session;
 use bw_core::services::state_import;
 use bw_core::services::storage::{JsonFileStorage, Storage};
@@ -74,9 +74,8 @@ fn full_login() -> Vec<(String, serde_json::Value)> {
 }
 
 async fn client(dir: &Path) -> bitwarden_core::Client {
-    create_sdk_client_with_state(None, None, dir.to_path_buf())
-        .await
-        .unwrap()
+    let registry = open_state(dir.to_path_buf()).await.unwrap();
+    create_sdk_client_with_state(None, None, registry)
 }
 
 #[tokio::test]

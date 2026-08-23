@@ -35,6 +35,13 @@ pub struct ExportResult {
     pub format: String,
     pub output_path: Option<String>,
     pub encrypted: bool,
+    /// The export document, when it was not written to a file.
+    ///
+    /// Returned rather than printed: only the caller knows whether stdout is
+    /// the data channel for this invocation. Printing it here, and then letting
+    /// the command print a status line too, is what made
+    /// `bw export --format json > vault.json` produce invalid JSON.
+    pub contents: Option<String>,
 }
 
 /// Format names accepted on the command line, in the order `--help` lists them.
@@ -52,7 +59,8 @@ impl ExportService {
 
     /// Export vault to the specified format.
     ///
-    /// Writes to `output_path` when given, otherwise to stdout.
+    /// Writes to `output_path` when given; otherwise returns the document in
+    /// [`ExportResult::contents`] for the caller to place.
     pub async fn export(
         &self,
         format: &str,
@@ -95,21 +103,21 @@ impl ExportService {
             .await
             .map_err(|e| ExportError::DecryptionError(e.to_string()))?;
 
-        if let Some(path) = output_path {
-            std::fs::write(path, contents.as_bytes())
-                .map_err(|e| ExportError::FileWriteError(format!("{}: {}", path, e)))?;
-        } else {
-            use std::io::Write;
-            std::io::stdout()
-                .write_all(contents.as_bytes())
-                .map_err(ExportError::IoError)?;
-        }
+        let contents = match output_path {
+            Some(path) => {
+                std::fs::write(path, contents.as_bytes())
+                    .map_err(|e| ExportError::FileWriteError(format!("{}: {}", path, e)))?;
+                None
+            }
+            None => Some(contents),
+        };
 
         Ok(ExportResult {
             item_count,
             format: format.to_string(),
             output_path: output_path.map(String::from),
             encrypted,
+            contents,
         })
     }
 

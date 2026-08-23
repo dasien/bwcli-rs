@@ -91,15 +91,12 @@ async fn setup_test_auth_service(
     // Login and unlock now mint the session through the SDK, so the service
     // needs a client with state to write the sealed key into.
     let temp_state = temp_dir.path().to_path_buf();
-    let sdk = Arc::new(
-        bw_core::services::create_sdk_client_with_state(
-            Some(api_url.clone()),
-            Some(api_url.clone()),
-            temp_state,
-        )
-        .await
-        .unwrap(),
-    );
+    let registry = bw_core::services::open_state(temp_state).await.unwrap();
+    let sdk = Arc::new(bw_core::services::create_sdk_client_with_state(
+        Some(api_url.clone()),
+        Some(api_url.clone()),
+        registry,
+    ));
 
     let auth_service = AuthService::new(Arc::clone(&storage), api_client, sdk);
 
@@ -126,15 +123,12 @@ async fn another_invocation(
             .expect("Failed to create API client"),
     );
 
-    let sdk = Arc::new(
-        bw_core::services::create_sdk_client_with_state(
-            Some(api_url.clone()),
-            Some(api_url),
-            dir.to_path_buf(),
-        )
-        .await
-        .unwrap(),
-    );
+    let registry = bw_core::services::open_state(dir.to_path_buf()).await.unwrap();
+    let sdk = Arc::new(bw_core::services::create_sdk_client_with_state(
+        Some(api_url.clone()),
+        Some(api_url),
+        registry,
+    ));
 
     (
         AuthService::new(Arc::clone(&storage), api_client, sdk),
@@ -145,9 +139,8 @@ async fn another_invocation(
 /// Setup standard mocks for password login tests
 /// A client over an existing state directory, i.e. the next `bw` invocation.
 async fn next_invocation_client(dir: &std::path::Path) -> bitwarden_core::Client {
-    bw_core::services::create_sdk_client_with_state(None, None, dir.to_path_buf())
-        .await
-        .unwrap()
+    let registry = bw_core::services::open_state(dir.to_path_buf()).await.unwrap();
+    bw_core::services::create_sdk_client_with_state(None, None, registry)
 }
 
 async fn setup_login_mocks(
