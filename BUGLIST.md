@@ -46,7 +46,7 @@ left alone.
 | S7 | `CipherPermissions` is `deny_unknown_fields`, rejects TS-CLI data | Won't fix |
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 
-**bwcli-rs** — 1 open, 27 fixed.
+**bwcli-rs** — 1 open, 28 fixed.
 
 | | Bug | Status |
 |---|---|---|
@@ -54,6 +54,7 @@ left alone.
 | C23 | `bw move` collided with the TS CLI's org-share command | Fixed |
 | C24 | `bw get org` should be `bw get organization` | Fixed |
 | C25 | `bw encode` required an argument instead of reading stdin | Fixed |
+| C28 | `bw unlock --raw` printed the whole blurb, not the session key | Fixed |
 | C26 | String payloads were JSON-quoted, breaking `$(bw get password …)` | Fixed |
 | C1 | `bw export --format json` emits invalid JSON | Fixed |
 | C2 | Self-hosted URLs persisted but never read back | Fixed |
@@ -320,6 +321,26 @@ found in a single afternoon of live testing after C12 made errors legible.
   and `get template` still emit parseable JSON.
 - **Tests:** `string_output_is_not_json_quoted`,
   `generate_output_is_not_json_quoted`, `document_output_is_still_json`.
+
+#### C28. `bw unlock --raw` printed the instructional blurb, not the session key
+- **Commands:** `bw unlock --raw`, `bw login --raw`
+- **Location:** `bw-cli/src/commands/auth/vault_ops.rs`, `commands/auth/login.rs`,
+  `bw-cli/src/output/`
+- **What happened:** `unlock` put its whole human message — *"Your vault is
+  unlocked! ... $ export BW_SESSION=..."* — into the response `data` as one
+  string, so `--raw` printed all of it. `export BW_SESSION=$(bw unlock --raw)`
+  therefore captured a paragraph. The TypeScript CLI's help states the contract
+  outright ("Pass `--raw` option to only return the session key") and implements it
+  with `MessageResponse.raw` (`unlock.command.ts:100`: `res.raw =
+  process.env.BW_SESSION`). `login` had the same shape.
+- **Found by:** writing the smoke test in `HANDOFF.md` and using
+  `bw unlock --raw` in it — the documented idiom for the single most common setup
+  step, which turned out not to work.
+- **Fix:** `Response::with_raw()` carries a machine-readable form alongside the
+  human one, and `print_raw` prefers it. Applied to `unlock` and both `login`
+  paths. Same principle as [C26](#c26-string-payloads-were-json-quoted-breaking-every-bw--capture):
+  `--raw` and stdout are for machines, prose is for people. **Fixed**, test
+  `unlock_raw_does_not_emit_the_instructional_blurb`.
 
 #### C24. `bw get org` should be `bw get organization`
 - **Command:** `bw get organization <id>`
@@ -632,6 +653,12 @@ they are worth the same scrutiny.
   collision with different meaning, which is a much bigger problem than the one I
   wrote down (now C23). The local `Bitwarden/clients` checkout settles questions
   like this in seconds; parity claims should be read out of it, not recalled.
+- **Three of these were found by using the CLI as its own documentation
+  describes.** C25 and C26 came from running `bw encode | bw move`, straight out of
+  the TypeScript CLI's help; C28 came from writing `export
+  BW_SESSION=$(bw unlock --raw)` into the handoff doc. Every one of those is a
+  first-five-minutes command, and none had a test. Walking the documented happy
+  path end to end finds more than adding cases to what already passes.
 - **Then trusted a checkout without checking its age.** Having been told the
   checkout "could be very old", re-reading it at `v2026.8.0` found three further
   errors in the parity matrix — `device-approval` listed as a missing OSS command

@@ -47,7 +47,8 @@ pub async fn execute_password_login(
                  You can also pass the session key to any command with the --session option. ex:\n\
                  $ bw list items --session {}",
                 login_result.session_key, login_result.session_key, login_result.session_key
-            )))
+            ))
+            .with_raw(login_result.session_key))
         }
         Err(AuthError::NewDeviceVerificationRequired) => {
             // New device verification required - prompt for OTP
@@ -74,7 +75,8 @@ pub async fn execute_password_login(
                  You can also pass the session key to any command with the --session option. ex:\n\
                  $ bw list items --session {}",
                 retry_result.session_key, retry_result.session_key, retry_result.session_key
-            )))
+            ))
+            .with_raw(retry_result.session_key))
         }
         Err(e) => Err(e.into()),
     }

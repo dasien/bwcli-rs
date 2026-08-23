@@ -23,6 +23,10 @@ pub struct SuccessResponse {
     /// Not part of the wire format — `--response` output is unaffected.
     #[serde(skip)]
     pub silent: bool,
+    /// What `--raw` should print instead of `data`; see [`Response::with_raw`].
+    /// Not part of the wire format.
+    #[serde(skip)]
+    pub raw: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +43,7 @@ impl Response {
             data: serde_json::to_value(data).ok(),
             message: None,
             silent: false,
+            raw: None,
         })
     }
 
@@ -49,6 +54,7 @@ impl Response {
             data: None,
             message: Some(message.into()),
             silent: false,
+            raw: None,
         })
     }
 
@@ -68,6 +74,7 @@ impl Response {
             data: Some(Value::String(data.into())),
             message: None,
             silent: false,
+            raw: None,
         })
     }
 
@@ -82,7 +89,24 @@ impl Response {
             data: None,
             message: None,
             silent: true,
+            raw: None,
         })
+    }
+
+    /// Give `--raw` something different to print.
+    ///
+    /// Some commands are prose for a human and one value for a script: `unlock`
+    /// explains how to export `BW_SESSION` but, under `--raw`, must print only
+    /// the key so `export BW_SESSION=$(bw unlock --raw)` works. This mirrors the
+    /// TypeScript CLI's `MessageResponse.raw`.
+    pub fn with_raw(self, raw: impl Into<String>) -> Self {
+        match self {
+            Response::Success(s) => Response::Success(SuccessResponse {
+                raw: Some(raw.into()),
+                ..s
+            }),
+            error => error,
+        }
     }
 
     /// Create a success response with JSON data
@@ -93,6 +117,7 @@ impl Response {
             data: Some(data),
             message: None,
             silent: false,
+            raw: None,
         })
     }
 

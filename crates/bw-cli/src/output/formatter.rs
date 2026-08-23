@@ -47,7 +47,11 @@ fn print_json(response: &Response, pretty: bool) {
 fn print_raw(response: &Response) {
     match response {
         Response::Success(s) => {
-            if let Some(data) = &s.data {
+            // An explicit raw form wins: `--raw` is for machine consumption, and
+            // the human payload may be prose wrapped around the value.
+            if let Some(raw) = &s.raw {
+                println!("{}", raw);
+            } else if let Some(data) = &s.data {
                 print_raw_value(data);
             } else if let Some(msg) = &s.message {
                 println!("{}", msg);

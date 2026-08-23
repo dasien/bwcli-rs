@@ -269,3 +269,20 @@ fn document_output_is_still_json() {
         .success()
         .stdout(predicate::str::starts_with("{"));
 }
+
+/// `bw unlock --raw` must print only the session key. The TypeScript CLI's help
+/// says so outright ("Pass `--raw` option to only return the session key"), and
+/// `export BW_SESSION=$(bw unlock --raw)` is the documented way to use it. Ours
+/// printed the whole instructional blurb, so the capture was unusable.
+///
+/// Checked on the not-logged-in path, which is as far as this goes without
+/// credentials: the point is that the blurb is no longer what `--raw` carries.
+#[test]
+fn unlock_raw_does_not_emit_the_instructional_blurb() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.args(["unlock", "--raw", "--nointeraction"]);
+
+    cmd.assert()
+        .stdout(predicate::str::contains("BW_SESSION").not())
+        .stdout(predicate::str::contains("export").not());
+}

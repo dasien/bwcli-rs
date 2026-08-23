@@ -22,13 +22,17 @@ pub async fn execute_unlock(
     let result = auth_service.unlock(password).await?;
 
     // Format output with session key
+    // `--raw` prints only the session key, matching the TypeScript CLI (whose
+    // help says so outright) and making `export BW_SESSION=$(bw unlock --raw)`
+    // work. Without it, `--raw` emitted the entire instructional blurb.
     Ok(Response::success(format!(
         "Your vault is unlocked!\n\n\
          To use your vault, set your session key to the BW_SESSION environment variable. ex:\n\
          $ export BW_SESSION=\"{}\"\n\
          > $env:BW_SESSION=\"{}\"",
         result.session_key, result.session_key
-    )))
+    ))
+    .with_raw(result.session_key))
 }
 
 /// Execute vault lock

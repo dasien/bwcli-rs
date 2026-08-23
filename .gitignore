@@ -32,9 +32,18 @@ Thumbs.db
 
 # Bitwarden CLI local state — NEVER commit.
 # storage/path.rs resolves appdata to ./bw-data when it exists, so running the
-# binary from the repo root drops data.json here. That file holds access and
-# refresh tokens plus the session-sealed user key.
+# binary from the repo root drops state here. `data.json` holds legacy tokens;
+# `user.sqlite` now holds the live access and refresh tokens
+# (`authentication_tokens`), the API-key client secret when one is used
+# (`user_login_method`), and the session-sealed user key
+# (`session_protected_user_key`). The .sqlite patterns are listed separately from
+# bw-data/ on purpose: BITWARDENCLI_APPDATA_DIR can put them anywhere.
 bw-data/
 data.json
+user.sqlite
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 __PROTECTED__*
 *.bwsession

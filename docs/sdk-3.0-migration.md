@@ -107,11 +107,63 @@ Object-level gaps:
 | `restore` | `item` | matches (fixed; was a bare id) |
 | `archive` | `item` | command absent |
 
-Two stubs became cheap once organization keys started loading, because the data
-they need is now decrypted locally: `get organization` (already in the `data.json`
-organization map) and `get collection` (`bw list collections` decrypts these
-today, so `get` is a lookup over the same list). Both still return
-"Not yet implemented".
+### What the SDK already provides for each stub
+
+Surveyed 2026-08-23 against `sdk-internal` at `rust-v3.0.0` (`9794da5`). Every
+"Not yet implemented" message is **ours** (`Response::error` in
+`crates/bw-cli/src/commands/`) — none of these reach `bw-core`, let alone the SDK.
+The question is what it would take to make each real.
+
+**High-level SDK client, reachable today:**
+
+| Stub | SDK entry point |
+|---|---|
+| `create attachment` | `client.vault().attachments().create_attachment()`, plus `encrypt_file`/`encrypt_buffer` and `renew_file_upload_url` |
+| `get attachment` | `get_attachment_download_url()`, plus `decrypt_file`/`decrypt_buffer` |
+| `delete attachment` | `delete_attachment()` |
+| `edit item-collections` | `CiphersClient::bulk_update_collections()` — adds or removes without duplicating |
+| `get fingerprint` | `PlatformClient::fingerprint()` / `user_fingerprint()` |
+
+Attachments are worth calling out: `attachment_client` is `pub(crate)`, the same
+shape as the `cipher_client` export gap (see above), **but** it re-exports its
+types (`AttachmentsClient`, `CreateAttachmentRequest`, `CreatedAttachment`,
+`AttachmentFileUploadType`) and `VaultClient::attachments()` exists. So unlike
+cipher create/edit, these are callable. The SDK also rolls back an orphaned
+attachment slot if a later step fails. The same file-upload machinery is what file
+Sends need, so doing attachments first de-risks that.
+
+**Generated endpoint exists; the crypto is ours to write:**
+
+| Stub | What exists |
+|---|---|
+| `list org-collections` | `collections_api::get_many_with_details` / `get_all` |
+| `list org-members` | `organization_users_api::get_all` / `get_mini_details` |
+| `create`/`edit`/`delete org-collection` | `collections_api::post`/`put`/`delete`, with `CollectionView: CompositeEncryptable` for the name |
+| `confirm` | `organization_users_api::confirm` — but wrapping the org key to the member's public key is not in the SDK |
+
+Note `bitwarden-collections` has **no client at all** — only `collection.rs`,
+`error.rs`, `tree.rs`. These are endpoints plus crypto traits, not drop-ins.
+
+**Trivial, and stubbed for no remaining reason:**
+
+- `get organization` — plain local data from the organization map; no SDK needed.
+- `get collection` — `Collection: Decryptable<CollectionView>`, which `bw list
+  collections` already uses. A lookup over a list we decrypt today.
+
+**Nothing usable in the SDK:**
+
+- `get exposed` — the generated `hibp_api::get` returns `Result<(), Error>`: no
+  typed response body, so it cannot report anything. And the TypeScript CLI does
+  not use the Bitwarden server for this; it calls the public pwnedpasswords
+  k-anonymity range API directly. Needs a hand-rolled HTTP call either way.
+  (`bw report password-health` is the bulk version, also absent from ours.)
+- `config` — `config_api::get_configs` returns *server* config; `bw config server`
+  is local settings, with no SDK equivalent.
+- `decrypt` — not a TypeScript CLI command; still a removal candidate.
+
+Rough value order given the above: **attachments** (three stubs, high-level
+support, de-risks file Sends), then the two trivial `get` stubs, then
+`edit item-collections` (one call), then the org-collection/org-member set.
 
 Ours that exist but are stubs: `config`, `confirm`, `login sso`,
 `list org-collections|org-members`, `create attachment|org-collection`,
