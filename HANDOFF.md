@@ -28,6 +28,9 @@ git ls-files | grep -iE "sqlite|data\.json|bw-data|bwsession"   # must print not
 
 ## 2. Three repositories, and the two siblings are load-bearing
 
+> Building needs a Rust toolchain, which a fresh machine will not have — see
+> section 3 if `cargo` is not found.
+
 | Repo | Path | Pin | Why |
 |---|---|---|---|
 | `bwcli-rs` | `~/Source/repos/bwcli-rs` | branch `sdk-3.0-migration` | this project |
@@ -96,10 +99,53 @@ does.
 
 ## 3. Toolchain
 
+### Install it first — `cargo: command not found` is the expected fresh-machine state
+
+```bash
+# Is it installed but not on PATH, or not installed?
+ls ~/.cargo/bin/cargo
+```
+
+**If that file exists, it is a PATH problem.** On macOS the shell is zsh, and zsh
+does **not** read `~/.profile` — which is where the rustup installer often writes
+its PATH line. Fix it for new shells and for the current one:
+
+```bash
+echo '. "$HOME/.cargo/env"' >> ~/.zshrc
+. "$HOME/.cargo/env"
+```
+
+(That is exactly how the verified machine is set up, via `~/.profile` there.)
+
+**If it does not exist, install rustup:**
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"
+rustup default stable
+```
+
+On a fresh Mac you also need a linker, or the first build fails at `cc` rather
+than at `cargo`:
+
+```bash
+xcode-select --install     # no-op if already present
+```
+
+### Versions
+
 - Rust **1.92.0** on the verified machine; `rust-version = "1.88.0"` is the floor.
-- Edition 2024. There is no `rust-toolchain.toml`, so a stable rustup is enough.
-- No system dependencies beyond what `rustls`/`reqwest` need. No OpenSSL.
-- `sqlite3` on `PATH` is handy for poking at state, not needed to build.
+- Edition 2024. There is no `rust-toolchain.toml`, so `rustup default stable` is
+  enough — nothing here needs nightly.
+- No system dependencies beyond what `rustls`/`reqwest` need. **No OpenSSL**, which
+  is deliberate: `reqwest` is configured `default-features = false` with
+  `rustls-tls`, so there is no system TLS library to install or mismatch.
+- `sqlite3` on `PATH` is handy for poking at state; not needed to build. macOS
+  ships it.
+
+```bash
+rustc --version && cargo --version    # confirm before going further
+```
 
 ```bash
 cd ~/Source/repos/bwcli-rs
