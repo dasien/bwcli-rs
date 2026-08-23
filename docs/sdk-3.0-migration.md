@@ -254,6 +254,12 @@ Ordered so correctness work lands on a green build, before the large migration.
 - [ ] **10. Remaining:** `generate` parity, `config server`, `clap_complete`,
       `bitwarden-cli` color.
 
+## Bug list
+
+Every defect found during this migration — SDK and ours, open and fixed — is
+tracked in [`BUGLIST.md`](../BUGLIST.md). The narrative sections below stay for
+context; the bug list is the running record.
+
 ## Two more SDK landmines (2026-08-22)
 
 - **`initialize_user_crypto` clobbers `USER_LOGIN_METHOD`.** It unconditionally
