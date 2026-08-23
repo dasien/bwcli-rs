@@ -211,12 +211,37 @@ to after any destructive test:
 Never commit a session key or token. Export `BW_SESSION` in the shell; do not put
 it in a file in the repo.
 
-**Run the check before you push:**
+### Do this first on a new clone — hooks are not cloned
 
 ```bash
-scripts/check-secrets.sh              # working tree and index
+git config core.hooksPath scripts/hooks
+```
+
+**This is not optional.** Git does not clone `.git/hooks`, so a fresh checkout has
+no protection until you run that line. The hooks live in `scripts/hooks/` so they
+are versioned; `core.hooksPath` is what activates them.
+
+- `pre-commit` refuses to commit a credential-shaped path or staged blob. It is
+  the gate that would have stopped C29, where a stray file was swept in by
+  `git add -A`.
+- `pre-push` re-checks the commits being pushed, because history can arrive by
+  rebase, amend, merge or cherry-pick without a commit of its own — and publishing
+  is the step that cannot be undone.
+
+Both are verified against the real leak: creating that file, `git add -A`, and
+committing is blocked, and a commit forced past `pre-commit` with `--no-verify` is
+blocked at push.
+
+Run it by hand any time:
+
+```bash
+scripts/check-secrets.sh              # working tree and index (warns on strays)
+scripts/check-secrets.sh --staged     # what pre-commit runs
 scripts/check-secrets.sh master..HEAD # every commit on the branch
 ```
+
+**Prefer `git add <path>` to `git add -A`.** The hooks make a sweep safe rather
+than fatal, but `-A` is what turned a shell typo into a published credential.
 
 It checks **paths before contents**, which is the lesson from `BUGLIST.md` C29: a
 session key once reached a pushed branch as a *filename* (`:BW_SESSION="pQEEAl…"`,

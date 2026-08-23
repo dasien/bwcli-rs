@@ -382,6 +382,18 @@ found in a single afternoon of live testing after C12 made errors legible.
   `--` stops option parsing but not magic parsing; `:(literal)` is what disables it.
   A no-op rewrite that exits successfully is exactly the failure you would not
   notice.
+- **Fix — the control, not the promise.** A script you have to remember is what
+  already failed; the check now runs whether anyone remembers it or not.
+  `scripts/hooks/pre-commit` refuses the commit, and `scripts/hooks/pre-push`
+  re-checks the pushed range because history arrives by rebase, amend and
+  cherry-pick too. Both are versioned under `scripts/hooks/` and activated with
+  `git config core.hooksPath scripts/hooks` — **git does not clone `.git/hooks`**,
+  so a fresh checkout is unprotected until that runs, which HANDOFF.md now makes
+  the first setup step. Verified end to end: the exact leak sequence (stray file,
+  `git add -A`, commit) is blocked, and a commit forced past `pre-commit` with
+  `--no-verify` is blocked at push with the remote left untouched.
+  The other half is habit: `git add -A` is what turned a shell typo into a
+  published credential, so explicit paths are the default now.
 - **Fix:** `scripts/check-secrets.sh` checks **paths before contents**, in the
   working tree, the index, or every commit in a range. It matches the session-key
   CBOR prefix (`pQEEAl…`), JWT shapes, `BW_SESSION` followed by a long token, and
