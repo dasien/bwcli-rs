@@ -202,7 +202,13 @@ The verification in the commit messages was run against a live test account —
 **no real credentials, per the owner** — in this state, which is worth restoring
 to after any destructive test:
 
-- 11 items, 1 folder (`Test Folder - Rust CLI (Renamed)`), empty trash
+- 12 items, 1 folder (`Test Folder - Rust CLI (Renamed)`), empty trash
+- one of those 12 is **`ATTACHMENT TEST - delete me`**
+  (`49d227ce-281e-41f8-913b-b4b00001cec4`), deliberately kept: it is the only
+  **organization-owned** item, and org ownership is what gets past the personal
+  premium gate on attachments. Recreating it means `create item` then `move` into
+  the org, and an item cannot be un-shared from an org afterwards — so it is
+  cheaper to keep than to remake. Leave it unless you are deliberately resetting.
 - organization **"Rust Test Org"** (`2c5dcda7-…`) with one collection
   (`Default collection`, `6412aa89-…`) — needed for the `bw move` org-share path,
   which cannot be tested without an organization
@@ -293,7 +299,9 @@ Next, in the value order the SDK survey implies:
    A live run on 2026-08-23 got two server rejections before reaching it:
    `"You must have premium status to use attachments."` on a personally-owned
    item, then `"Not enough storage available."` on an org-owned one
-   (Rust Test Org has `maxStorageGb: null`). Everything up to the upload is
+   (Rust Test Org has `maxStorageGb: null`). Use the org-owned fixture item in §4
+   for the retest — a personally-owned item cannot get past the first gate at all.
+   Everything up to the upload is
    exercised — encryption, auth, request serialization, and a clean no-orphan
    failure. The upload, download, decrypt, round trip and rollback are not.
    **Needs premium on the test account or storage on the org.** See §7.
@@ -321,7 +329,7 @@ cargo build --release
 ./target/release/bw login
 export BW_SESSION="$(./target/release/bw unlock --raw)"
 ./target/release/bw sync
-./target/release/bw list items | jq length          # 11
+./target/release/bw list items | jq length          # 12 (see the fixture note above)
 ./target/release/bw list organizations | jq -r '.[].name'   # Rust Test Org
 ./target/release/bw get password <id>              # must print bare, no quotes (C26)
 
