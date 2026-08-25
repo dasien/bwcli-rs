@@ -286,3 +286,42 @@ fn unlock_raw_does_not_emit_the_instructional_blurb() {
         .stdout(predicate::str::contains("BW_SESSION").not())
         .stdout(predicate::str::contains("export").not());
 }
+
+/// A handled failure must exit non-zero.
+///
+/// Commands signal a failure by returning `Ok(Response::error(..))`, so the
+/// `Result` is `Ok` and only the *response* says it failed. `main` used to
+/// return `ExitCode::SUCCESS` for the whole `Ok` arm, which meant every failing
+/// command exited 0 and `bw get item nope && deploy` ran `deploy`. No test
+/// caught it because none asserted an exit code on a failure path.
+#[test]
+fn a_locked_vault_failure_exits_nonzero() {
+    // `get item` needs an unlocked vault; with no session this fails early and
+    // needs no network or state.
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.env_remove("BW_SESSION")
+        .env_remove("BW_CLEANEXIT")
+        .args(["get", "item", "nonexistent"]);
+
+    cmd.assert().failure();
+}
+
+#[test]
+fn an_unknown_template_type_exits_nonzero() {
+    // `get template` needs no session, so this exercises the `Ok(error)` path
+    // specifically rather than the pre-flight session check.
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.env_remove("BW_CLEANEXIT")
+        .args(["get", "template", "not-a-real-template"]);
+
+    cmd.assert().failure();
+}
+
+#[test]
+fn cleanexit_forces_success_on_a_handled_failure() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.env_remove("BW_CLEANEXIT")
+        .args(["get", "template", "not-a-real-template", "--cleanexit"]);
+
+    cmd.assert().success();
+}

@@ -187,8 +187,17 @@ async fn main() -> ExitCode {
 
     let exit_code = match result {
         Ok(response) => {
+            // A command reports a *handled* failure by returning `Ok` around an
+            // error `Response` — only unhandled errors reach the `Err` arm. So
+            // the response has to be consulted too, or `bw get item nope` exits
+            // 0 and every `bw ... && ...` script treats the failure as success.
+            let failed = !response.is_success();
             output::print_response(response, &cli.global_args);
-            ExitCode::SUCCESS
+            if failed && !cli.global_args.cleanexit {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(e) => {
             if !cli.global_args.quiet {
