@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+pub mod attachment_service;
 pub mod cipher_service;
 pub mod confirmation_service;
 pub mod errors;
@@ -22,6 +23,7 @@ pub mod totp_service;
 pub mod validation_service;
 pub mod write_service;
 
+pub use attachment_service::{AttachmentService, DownloadedAttachment};
 pub use cipher_service::CipherService;
 pub use confirmation_service::ConfirmationService;
 pub use errors::VaultError;

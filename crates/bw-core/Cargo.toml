@@ -22,6 +22,7 @@ bitwarden-auth.workspace = true
 bitwarden-vault.workspace = true
 bitwarden-collections.workspace = true
 bitwarden-api-api.workspace = true
+bitwarden-api-base.workspace = true
 bitwarden-generators.workspace = true
 bitwarden-exporters.workspace = true
 bitwarden-send.workspace = true
@@ -33,6 +34,7 @@ bitwarden-error.workspace = true
 
 # HTTP and API
 reqwest.workspace = true
+reqwest_sdk.workspace = true
 url.workspace = true
 async-trait.workspace = true
 directories.workspace = true

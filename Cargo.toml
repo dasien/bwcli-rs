@@ -34,6 +34,7 @@ bitwarden-auth = { path = "../sdk-internal/crates/bitwarden-auth", version = "=3
 bitwarden-vault = { path = "../sdk-internal/crates/bitwarden-vault", version = "=3.0.0" }
 bitwarden-collections = { path = "../sdk-internal/crates/bitwarden-collections", version = "=3.0.0" }
 bitwarden-api-api = { path = "../sdk-internal/crates/bitwarden-api-api", version = "=3.0.0" }
+bitwarden-api-base = { path = "../sdk-internal/crates/bitwarden-api-base", version = "=3.0.0" }
 bitwarden-generators = { path = "../sdk-internal/crates/bitwarden-generators", version = "=3.0.0" }
 bitwarden-exporters = { path = "../sdk-internal/crates/bitwarden-exporters", version = "=3.0.0" }
 bitwarden-send = { path = "../sdk-internal/crates/bitwarden-send", version = "=3.0.0" }
@@ -45,6 +46,13 @@ bitwarden-error = { path = "../sdk-internal/crates/bitwarden-error", version = "
 
 # HTTP Client
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# The SDK's API client is built on reqwest 0.13 + reqwest-middleware, so a
+# multipart body handed to it must be a *0.13* `Form` — a 0.12 one is a
+# different type. Only `AttachmentService::upload` needs this. Both versions are
+# already in the graph (0.12 ours, 0.13 the SDK's), and the SDK already turns on
+# `multipart`, so this alias adds no compilation. Drop it when the workspace
+# moves to 0.13.
+reqwest_sdk = { package = "reqwest", version = "0.13", default-features = false, features = ["multipart"] }
 
 # Security
 secrecy = "0.8"

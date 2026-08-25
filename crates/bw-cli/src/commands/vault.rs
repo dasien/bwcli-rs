@@ -6,8 +6,8 @@ use crate::output::Response;
 use bw_core::models::vault::CipherView;
 use bw_core::services::storage::AccountManager;
 use bw_core::services::vault::{
-    CipherService, ConfirmationService, FieldType, ItemFilters, ValidationService, VaultError,
-    VaultService, WriteService,
+    AttachmentService, CipherService, ConfirmationService, FieldType, ItemFilters,
+    ValidationService, VaultError, VaultService, WriteService,
 };
 use clap::{Args, Subcommand};
 use std::sync::Arc;
@@ -145,10 +145,13 @@ pub struct GetExposedCommand {
 
 #[derive(Args)]
 pub struct GetAttachmentCommand {
+    /// Attachment's id, or part of its file name.
     #[arg(value_name = "ID")]
     pub id: String,
+    /// Attachment's item id.
     #[arg(long, required = true)]
     pub itemid: String,
+    /// Output directory or filename for attachment.
     #[arg(long)]
     pub output: Option<String>,
 }
@@ -204,8 +207,10 @@ pub struct CreateItemCommand {
 
 #[derive(Args)]
 pub struct CreateAttachmentCommand {
+    /// Path to file for attachment.
     #[arg(long, required = true)]
     pub file: String,
+    /// Attachment's item id.
     #[arg(long, required = true)]
     pub itemid: String,
 }
@@ -295,8 +300,10 @@ pub struct DeleteItemCommand {
 
 #[derive(Args)]
 pub struct DeleteAttachmentCommand {
+    /// Attachment's id.
     #[arg(value_name = "ID")]
     pub id: String,
+    /// Attachment's item id.
     #[arg(long, required = true)]
     pub itemid: String,
 }
@@ -402,6 +409,88 @@ pub(crate) fn create_write_service(ctx: &AppContext, no_interaction: bool) -> Wr
         Arc::new(ValidationService::new()),
         Arc::new(ConfirmationService::new(no_interaction)),
     )
+}
+
+/// Write downloaded attachment bytes where the user asked for them.
+///
+/// Mirrors the TypeScript CLI's `CliUtils.saveFile`, which overloads `--output`:
+///
+/// - no separator (`photo.jpg`) — a file name, relative to the working directory
+/// - trailing separator (`out/`) — a directory; the attachment keeps its own name
+/// - otherwise (`out/photo.jpg`) — a full path
+///
+/// Parent directories are created for the last two, as upstream does. Modes match
+/// too: `0600` for the file, `0700` for directories, because attachment contents
+/// are as sensitive as the vault they came from.
+///
+/// With `--raw` and no `--output` the bytes go to stdout instead, so
+/// `bw get attachment x --itemid y --raw > file` works. Attachments are
+/// arbitrary binary, so this writes bytes and never a `String`.
+fn save_attachment(
+    contents: &[u8],
+    output: Option<&str>,
+    default_file_name: &str,
+    raw: bool,
+) -> anyhow::Result<Response> {
+    use std::io::Write;
+
+    if raw && output.is_none_or(str::is_empty) {
+        std::io::stdout().write_all(contents)?;
+        std::io::stdout().flush()?;
+        return Ok(Response::silent());
+    }
+
+    let path = attachment_output_path(output, default_file_name);
+
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
+        set_mode(parent, 0o700);
+    }
+
+    std::fs::write(&path, contents)?;
+    set_mode(&path, 0o600);
+
+    let path = path.display().to_string();
+    Ok(Response::success_message(format!("Saved {path}")).with_raw(path))
+}
+
+/// Resolve `--output` into a concrete path. See [`save_attachment`].
+fn attachment_output_path(output: Option<&str>, default_file_name: &str) -> std::path::PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_default();
+
+    let Some(output) = output.filter(|o| !o.is_empty()) else {
+        return cwd.join(default_file_name);
+    };
+
+    // A bare name is a file in the working directory, not a directory to create.
+    if !output.contains(std::path::MAIN_SEPARATOR) {
+        return cwd.join(output);
+    }
+
+    if output.ends_with(std::path::MAIN_SEPARATOR) {
+        std::path::Path::new(output).join(default_file_name)
+    } else {
+        std::path::PathBuf::from(output)
+    }
+}
+
+/// Best-effort permissions tightening; a filesystem without unix modes is not a
+/// reason to fail a download that already succeeded.
+fn set_mode(path: &std::path::Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+}
+
+fn create_attachment_service(ctx: &AppContext) -> AttachmentService {
+    AttachmentService::new(Arc::new(ctx.sdk().clone()))
 }
 
 /// Merge updates into existing cipher view
@@ -663,6 +752,23 @@ pub async fn execute_get(
             }
         }
 
+        GetCommands::Attachment(attachment_cmd) => {
+            let _session = get_session(global_args)?;
+
+            match create_attachment_service(ctx)
+                .download(&attachment_cmd.itemid, &attachment_cmd.id)
+                .await
+            {
+                Ok(downloaded) => save_attachment(
+                    &downloaded.contents,
+                    attachment_cmd.output.as_deref(),
+                    &downloaded.file_name,
+                    global_args.raw,
+                ),
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+
         _ => Ok(Response::error("Not yet implemented")),
     }
 }
@@ -732,7 +838,27 @@ pub async fn execute_create(
             }
         }
 
-        CreateCommands::Attachment(_) | CreateCommands::OrgCollection(_) => {
+        CreateCommands::Attachment(attachment_cmd) => {
+            let _session = get_session(global_args)?;
+
+            let path = std::path::PathBuf::from(&attachment_cmd.file);
+            if !path.is_file() {
+                return Ok(Response::error(format!(
+                    "Cannot find file at {}",
+                    path.display()
+                )));
+            }
+
+            match create_attachment_service(ctx)
+                .create(&attachment_cmd.itemid, &path)
+                .await
+            {
+                Ok(item) => Ok(Response::success(item)),
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+
+        CreateCommands::OrgCollection(_) => {
             Ok(Response::error("Not yet implemented"))
         }
     }
@@ -881,7 +1007,19 @@ pub async fn execute_delete(
             }
         }
 
-        DeleteCommands::Attachment(_) | DeleteCommands::OrgCollection(_) => {
+        DeleteCommands::Attachment(attachment_cmd) => {
+            let _session = get_session(global_args)?;
+
+            match create_attachment_service(ctx)
+                .delete(&attachment_cmd.itemid, &attachment_cmd.id)
+                .await
+            {
+                Ok(()) => Ok(Response::success_message("Attachment deleted.")),
+                Err(e) => Ok(Response::error(e.to_string())),
+            }
+        }
+
+        DeleteCommands::OrgCollection(_) => {
             Ok(Response::error("Not yet implemented"))
         }
     }
@@ -1076,4 +1214,67 @@ pub async fn execute_confirm(
     _ctx: &AppContext,
 ) -> anyhow::Result<Response> {
     Ok(Response::error("Not yet implemented"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::attachment_output_path;
+    use std::path::{MAIN_SEPARATOR, PathBuf};
+
+    fn cwd() -> PathBuf {
+        std::env::current_dir().unwrap()
+    }
+
+    #[test]
+    fn no_output_uses_the_attachment_name_in_the_working_directory() {
+        assert_eq!(
+            attachment_output_path(None, "photo.jpg"),
+            cwd().join("photo.jpg")
+        );
+    }
+
+    #[test]
+    fn an_empty_output_is_treated_as_absent() {
+        assert_eq!(
+            attachment_output_path(Some(""), "photo.jpg"),
+            cwd().join("photo.jpg")
+        );
+    }
+
+    #[test]
+    fn a_bare_name_renames_the_file_in_the_working_directory() {
+        // Notably *not* a directory to create — upstream only mkdirs when the
+        // output contains a separator.
+        assert_eq!(
+            attachment_output_path(Some("renamed.jpg"), "photo.jpg"),
+            cwd().join("renamed.jpg")
+        );
+    }
+
+    #[test]
+    fn a_trailing_separator_means_a_directory() {
+        let out = format!("out{MAIN_SEPARATOR}sub{MAIN_SEPARATOR}");
+        assert_eq!(
+            attachment_output_path(Some(&out), "photo.jpg"),
+            PathBuf::from(format!("out{MAIN_SEPARATOR}sub")).join("photo.jpg")
+        );
+    }
+
+    #[test]
+    fn a_path_without_a_trailing_separator_is_the_whole_filename() {
+        let out = format!("out{MAIN_SEPARATOR}renamed.jpg");
+        assert_eq!(
+            attachment_output_path(Some(&out), "photo.jpg"),
+            PathBuf::from(&out)
+        );
+    }
+
+    #[test]
+    fn an_absolute_path_is_left_alone() {
+        let out = format!("{MAIN_SEPARATOR}tmp{MAIN_SEPARATOR}renamed.jpg");
+        assert_eq!(
+            attachment_output_path(Some(&out), "photo.jpg"),
+            PathBuf::from(&out)
+        );
+    }
 }
