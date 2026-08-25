@@ -143,6 +143,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrayref"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -338,7 +344,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_repr",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "uuid",
@@ -355,7 +361,7 @@ dependencies = [
  "bitwarden-uuid",
  "serde",
  "serde_repr",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "uuid",
 ]
 
@@ -389,7 +395,7 @@ dependencies = [
  "serde_json",
  "serde_qs",
  "serde_repr",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tracing",
  "url",
  "uuid",
@@ -442,7 +448,7 @@ dependencies = [
  "sha1",
  "sha2 0.11.0",
  "subtle",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "typenum",
@@ -470,7 +476,7 @@ dependencies = [
  "bitwarden-crypto",
  "bitwarden-sync",
  "serde",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -480,7 +486,7 @@ dependencies = [
  "data-encoding",
  "data-encoding-macro",
  "serde",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -518,7 +524,7 @@ dependencies = [
  "num-traits",
  "serde",
  "serde_json",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "url",
  "uuid",
  "zeroize",
@@ -543,7 +549,7 @@ dependencies = [
  "reqwest 0.13.4",
  "serde",
  "serde_json",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tracing",
  "uuid",
 ]
@@ -562,7 +568,7 @@ dependencies = [
  "schemars 1.1.0",
  "serde",
  "serde_json",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -580,7 +586,7 @@ dependencies = [
  "data-encoding",
  "keepass",
  "serde",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "uuid",
  "zeroize",
 ]
@@ -618,7 +624,7 @@ dependencies = [
  "serde",
  "serde_json",
  "subtle",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "zeroize",
 ]
 
@@ -634,7 +640,7 @@ dependencies = [
  "bitwarden-organization-crypto",
  "chrono",
  "serde",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "uuid",
 ]
 
@@ -673,7 +679,7 @@ dependencies = [
  "bitwarden-user-crypto-management",
  "bitwarden-vault",
  "reqwest-middleware",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tracing",
 ]
 
@@ -696,7 +702,7 @@ version = "3.0.0"
 dependencies = [
  "bitwarden-error",
  "rand 0.10.2",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "uuid",
 ]
 
@@ -717,7 +723,7 @@ dependencies = [
  "serde",
  "serde_repr",
  "sha2 0.11.0",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "uuid",
  "zeroize",
 ]
@@ -740,7 +746,7 @@ dependencies = [
  "reqwest 0.13.4",
  "reqwest-middleware",
  "serde",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
 ]
@@ -764,7 +770,7 @@ dependencies = [
  "serde",
  "ssh-cipher",
  "ssh-key",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -779,7 +785,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tsify",
@@ -804,7 +810,7 @@ dependencies = [
  "bitwarden-state",
  "chrono",
  "serde",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
 ]
@@ -815,7 +821,7 @@ version = "3.0.0"
 dependencies = [
  "bitwarden-error",
  "serde",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-util",
  "tracing",
@@ -828,7 +834,7 @@ dependencies = [
  "bitwarden-core",
  "bitwarden-crypto",
  "bitwarden-state",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tracing",
 ]
 
@@ -849,7 +855,7 @@ dependencies = [
  "reqwest 0.13.4",
  "serde",
  "serde_bytes",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "uuid",
@@ -899,7 +905,7 @@ dependencies = [
  "sha1",
  "sha2 0.11.0",
  "subtle",
- "thiserror 2.0.17",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-util",
  "tracing",
@@ -918,10 +924,11 @@ dependencies = [
 
 [[package]]
 name = "blake2b_simd"
-version = "1.0.5"
+version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3560a7b1951efe814fcd721938313adc56753ca39f4b23847d7e9a2402f5dbff"
+checksum = "b79834656f71332577234b50bfc009996f7449e0c056884e6a02492ded0ca2f3"
 dependencies = [
+ "arrayref",
  "arrayvec",
  "constant_time_eq",
 ]
@@ -2723,9 +2730,9 @@ dependencies = [
 
 [[package]]
 name = "keepass"
-version = "0.13.22"
+version = "0.13.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a845a36b656474a0e73e71bfb7dec34250244df364815b77abe1067f17e59e8e"
+checksum = "099ef92d510311bb00a8fb6c6599b5c496124bae15438a206d3498d5285cb53e"
 dependencies = [
  "aes",
  "base64 0.23.1",
