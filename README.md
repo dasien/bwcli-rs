@@ -94,6 +94,7 @@ This project is in active development. Currently implemented:
 - ✅ Vault read commands (list, get, TOTP)
 - ✅ Password/passphrase generation
 - ✅ Vault write commands (create, edit, delete, restore, move)
+- ✅ Attachments (create, get, delete)
 - 🚧 Send commands
 - 🚧 Import/export
 

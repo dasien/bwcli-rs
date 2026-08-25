@@ -45,12 +45,15 @@ left alone.
 | S6 | `export_organization_vault` is `todo!()` | Worked around |
 | S7 | `CipherPermissions` is `deny_unknown_fields`, rejects TS-CLI data | Won't fix |
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
+| S9 | Attachment upload machinery is private; the generated endpoint sends no body | Worked around |
 
-**bwcli-rs** — 1 open, 29 fixed.
+**bwcli-rs** — 2 open, 30 fixed.
 
 | | Bug | Status |
 |---|---|---|
 | C27 | `bw get template` needs an unlocked vault | **Open** |
+| C30 | No local premium pre-check on attachment commands | **Open** |
+| C31 | Every failing command exited 0 | Fixed |
 | C23 | `bw move` collided with the TS CLI's org-share command | Fixed |
 | C24 | `bw get org` should be `bw get organization` | Fixed |
 | C25 | `bw encode` required an argument instead of reading stdin | Fixed |
@@ -212,6 +215,26 @@ found in a single afternoon of live testing after C12 made errors legible.
 - **Our fix:** don't adopt. **Won't fix** locally; listed here because the name
   invites exactly the wrong assumption.
 
+#### S9. Attachment upload machinery is private, and the generated endpoint sends no body
+- **Location:** `crates/bitwarden-vault/src/cipher/attachment_client/upgrade.rs`
+  (`upload_reencrypted`), `crates/bitwarden-api-api/src/apis/ciphers_api.rs`
+  (`post_file_for_existing_attachment`)
+- **What happens:** `AttachmentsClient::create_attachment` only opens the slot;
+  its own docs say "the caller must upload the encrypted bytes". The SDK *has* an
+  uploader handling both transports — `upload_reencrypted` — but it is a private
+  method on `AttachmentsClient`, reachable only through `upgrade_attachment`,
+  which is for migrating legacy v1 attachments and not for new ones.
+  The obvious fallback is no better: the generated
+  `ciphers_api::post_file_for_existing_attachment` takes `(id, attachment_id)`
+  and **no body**, so calling it uploads nothing and the slot stays empty.
+- **Our fix:** `AttachmentService::upload` reimplements both transports —
+  unauthenticated `PUT` for Azure presigned URLs, authenticated multipart `POST`
+  for `Direct`. **Worked around.** Delete it if the SDK exposes its uploader.
+- **Knock-on:** the multipart form must be built with the SDK's reqwest (0.13),
+  not the workspace's (0.12), because `ClientWithMiddleware::multipart` takes the
+  0.13 `Form` type. Hence the `reqwest_sdk` alias in the workspace manifest.
+  Both versions were already in the graph, so it costs no compilation.
+
 ---
 
 ## bwcli-rs bugs — our code
@@ -233,7 +256,46 @@ found in a single afternoon of live testing after C12 made errors legible.
   makes `bw get template item | bw create item` need a session for the template
   half, which is the pipeline C13 exists to protect.
 
+#### C30. No local premium pre-check on attachment commands
+- **Command:** `bw create attachment`, `bw get attachment`, `bw delete attachment`
+- **Location:** `bw-core/src/services/vault/attachment_service.rs`
+- **What happens:** attachments are a premium feature for personally-owned items.
+  The TypeScript CLI checks premium status locally first and fails with
+  *"Premium status is required to use this feature."*; organization-owned items
+  are exempt. We do not check, so the user gets whatever the server returns
+  instead of that sentence.
+- **Why it is not just an oversight:** there is nowhere honest to read the flag
+  from. `UserProfile::premium` exists in `bw-core/src/models/state/user.rs` but
+  **nothing ever writes it** — `sync` does not populate it. Checking it would
+  reject every premium user, which is worse than not checking. Making it real
+  means having `sync` persist the profile flag first.
+- **Effect:** the operation still fails correctly, and for the right reason; only
+  the message is worse. Nothing succeeds that should not.
+- **Status:** **Open.**
+
 ### Fixed
+
+#### C31. Every failing command exited 0
+- **Command:** all of them — found on `bw create attachment`, reproduced on
+  `bw get item`, `bw get folder`, `bw get template`
+- **Location:** `bw-cli/src/main.rs` — the `Ok(response)` arm of the exit-code match
+- **What happened:** a command signals a *handled* failure by returning
+  `Ok(Response::error(..))`; only unhandled errors become `Err`. The match
+  returned `ExitCode::SUCCESS` for the whole `Ok` arm without looking at the
+  response, so **every** failing command printed its error and exited 0.
+  `Response::is_success()` already existed and was simply never called.
+- **Why it matters:** it silently breaks control flow in any script.
+  `bw get item nope && something-destructive` runs the second half. `set -e`
+  never trips. CI reports green on a vault that could not be read.
+- **Fix:** consult `response.is_success()` in that arm, still honouring
+  `--cleanexit`. Verified live: failures exit 1, successes exit 0, `--cleanexit`
+  forces 0. **Fixed**, with three regression tests.
+- **Found by:** checking the exit code of a command whose *error message* was
+  already correct. The message was right, so nothing looked wrong.
+- **Why no test caught it:** the integration suite asserted `.success()` on happy
+  paths and stdout contents on failures, but never an exit code on a failure. A
+  whole class of bug sat outside what the assertions could see — the same shape
+  as the network-crossing gap called out at the top of this file.
 
 #### C23. `bw move` collided with the TypeScript CLI's org-share command
 - **Command:** `bw move <id> <organizationId> [encodedJson]`

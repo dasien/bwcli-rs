@@ -260,7 +260,7 @@ does nothing while reporting success.
 | File | What it gives you |
 |---|---|
 | `docs/sdk-3.0-migration.md` | why the migration went the way it did: the SDK-native decision, phases 1–10, the parity matrix, the per-stub SDK-capability survey, and the "do not adopt" list with reasons |
-| `BUGLIST.md` | every defect found, SDK and ours, open and fixed — 1 open, 28 fixed, 8 SDK. Read the header: ids are stable, corrections are noted in place |
+| `BUGLIST.md` | every defect found, SDK and ours, open and fixed — 2 open, 30 fixed, 9 SDK. Read the header: ids are stable, corrections are noted in place |
 | `git log master..sdk-3.0-migration` | the commit messages carry the reasoning and the live-verification results |
 
 Two themes to absorb before trusting the suite:
@@ -286,9 +286,17 @@ tokens, vault reads and writes, the `data.json` carry-over, and org-share.
 
 Next, in the value order the SDK survey implies:
 
-1. **Attachments** — `create`/`get`/`delete attachment`. Three stubs, high-level
-   SDK support that is genuinely reachable, and it de-risks file Sends by sharing
-   the upload machinery. See the survey in `docs/sdk-3.0-migration.md`.
+1. **Attachments** — **implemented; verification blocked on account entitlements.**
+   `create`/`get`/`delete attachment` are in
+   `bw-core/src/services/vault/attachment_service.rs`. The byte upload had to be
+   reimplemented (`BUGLIST.md` S9) and **that reimplementation is still unproven.**
+   A live run on 2026-08-23 got two server rejections before reaching it:
+   `"You must have premium status to use attachments."` on a personally-owned
+   item, then `"Not enough storage available."` on an org-owned one
+   (Rust Test Org has `maxStorageGb: null`). Everything up to the upload is
+   exercised — encryption, auth, request serialization, and a clean no-orphan
+   failure. The upload, download, decrypt, round trip and rollback are not.
+   **Needs premium on the test account or storage on the org.** See §7.
 2. **`get organization` and `get collection`** — stubbed for no remaining reason;
    both are lookups over data already decrypted locally.
 3. **`edit item-collections`** — one call to `CiphersClient::bulk_update_collections`.
@@ -316,7 +324,21 @@ export BW_SESSION="$(./target/release/bw unlock --raw)"
 ./target/release/bw list items | jq length          # 11
 ./target/release/bw list organizations | jq -r '.[].name'   # Rust Test Org
 ./target/release/bw get password <id>              # must print bare, no quotes (C26)
+
+# attachments — implemented but never yet run against a real server:
+ITEM=<item-id>
+echo "hello attachment" > /tmp/att.txt
+./target/release/bw create attachment --file /tmp/att.txt --itemid "$ITEM"
+./target/release/bw get item "$ITEM" | jq '.attachments'          # expect one entry
+./target/release/bw get attachment att.txt --itemid "$ITEM" --raw # expect the text back
+./target/release/bw get attachment att.txt --itemid "$ITEM" --output /tmp/out/
+./target/release/bw delete attachment <attachment-id> --itemid "$ITEM"
 ```
+
+The attachment round trip is the one that matters: `create` then `get --raw` must
+return the same bytes, which is the only check that proves the upload transport
+and the encryption agree. Restore the test vault afterwards — the account is
+documented above as having no attachments.
 
 That last one is the cheapest check that the output layer is behaving: a quoted
 value means C26 has regressed and every `$(bw ...)` capture is wrong.

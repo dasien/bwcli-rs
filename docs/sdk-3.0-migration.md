@@ -101,9 +101,9 @@ Object-level gaps:
 | `move` | `<id> <organizationId> [encodedJson]` | matches now (was a folder move; see `BUGLIST.md` C23) |
 | `share` | deprecated alias of `move` | accepted as an alias |
 | `list` | `items folders collections org-collections org-members organizations` | all present; `org-collections`/`org-members` are stubs |
-| `create` | `item attachment folder org-collection` | `attachment`, `org-collection` are stubs |
+| `create` | `item attachment folder org-collection` | `org-collection` is a stub; `attachment` implemented |
 | `edit` | `item item-collections folder org-collection` | `item-collections`, `org-collection` are stubs |
-| `delete` | `item attachment folder org-collection` | `attachment`, `org-collection` are stubs |
+| `delete` | `item attachment folder org-collection` | `org-collection` is a stub; `attachment` implemented |
 | `restore` | `item` | matches (fixed; was a bare id) |
 | `archive` | `item` | command absent |
 
@@ -118,9 +118,9 @@ The question is what it would take to make each real.
 
 | Stub | SDK entry point |
 |---|---|
-| `create attachment` | `client.vault().attachments().create_attachment()`, plus `encrypt_file`/`encrypt_buffer` and `renew_file_upload_url` |
-| `get attachment` | `get_attachment_download_url()`, plus `decrypt_file`/`decrypt_buffer` |
-| `delete attachment` | `delete_attachment()` |
+| ~~`create attachment`~~ **done** | `create_attachment()` + `encrypt_buffer()`; the byte upload is ours (`BUGLIST.md` S9) |
+| ~~`get attachment`~~ **done** | `get_attachment_download_url()` + `decrypt_buffer()` |
+| ~~`delete attachment`~~ **done** | `delete_attachment()` |
 | `edit item-collections` | `CiphersClient::bulk_update_collections()` — adds or removes without duplicating |
 | `get fingerprint` | `PlatformClient::fingerprint()` / `user_fingerprint()` |
 
@@ -131,6 +131,15 @@ types (`AttachmentsClient`, `CreateAttachmentRequest`, `CreatedAttachment`,
 cipher create/edit, these are callable. The SDK also rolls back an orphaned
 attachment slot if a later step fails. The same file-upload machinery is what file
 Sends need, so doing attachments first de-risks that.
+
+**Done, 2026-08-23**, in `bw-core/src/services/vault/attachment_service.rs`. One
+thing the survey above got wrong: `create_attachment` opens the *slot* only — it
+does not upload. The SDK's uploader exists but is private, and the generated
+endpoint that looks like the answer sends no body, so the two transports (Azure
+presigned `PUT`, `Direct` multipart `POST`) are reimplemented here. See
+`BUGLIST.md` S9. The SDK's own rollback of an orphaned slot only covers failures
+*inside* `create_attachment`; a failed upload afterwards is ours to undo, and
+`AttachmentService::create` does.
 
 **Generated endpoint exists; the crypto is ours to write:**
 
@@ -161,14 +170,14 @@ Note `bitwarden-collections` has **no client at all** — only `collection.rs`,
   is local settings, with no SDK equivalent.
 - `decrypt` — not a TypeScript CLI command; still a removal candidate.
 
-Rough value order given the above: **attachments** (three stubs, high-level
-support, de-risks file Sends), then the two trivial `get` stubs, then
-`edit item-collections` (one call), then the org-collection/org-member set.
+Rough value order given the above: ~~**attachments**~~ (done), then the two
+trivial `get` stubs, then `edit item-collections` (one call), then the
+org-collection/org-member set.
 
 Ours that exist but are stubs: `config`, `confirm`, `login sso`,
-`list org-collections|org-members`, `create attachment|org-collection`,
-`edit item-collections|org-collection`, `delete attachment|org-collection`,
-`get attachment|collection|organization|exposed|fingerprint`, file Sends,
+`list org-collections|org-members`, `create org-collection`,
+`edit item-collections|org-collection`, `delete org-collection`,
+`get collection|organization|exposed|fingerprint`, file Sends,
 org import/export.
 
 Ours that are not TypeScript CLI commands at all: `decrypt` (stubbed — candidate
@@ -179,6 +188,11 @@ Working: `login` (password + API key, 2FA, new-device OTP), `logout`, `lock`,
 `get item|username|password|uri|totp|folder|template`, `create item|folder`,
 `edit item|folder`, `delete item|folder`, `restore item`, `generate`, `encode`,
 `import`, `export`, text Sends, `receive`, `move-to-folder`.
+
+`create|get|delete attachment` are implemented but **not yet verified against a
+live server** — see the note under the survey, and treat them as unproven until
+someone runs them against a real vault. Nothing about them is covered by a test
+that crosses the network, which is precisely the gap that hid C4, C25 and C28.
 
 `move` / `share` (org-share) works, verified end to end against a real
 organization. Organization keys now reach the key store via `sync`, which is also
