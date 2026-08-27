@@ -1,7 +1,7 @@
 use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::input::get_json_string;
-use crate::output::Response;
+use crate::output::{CommandResult, Response};
 use bitwarden_send::{
     AuthEdit, SendAddRequest, SendAuthType, SendClientExt, SendEditRequest, SendId, SendTextView,
     SendView, SendViewType,
@@ -150,7 +150,7 @@ fn require_session(global_args: &GlobalArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn send_response(global_args: &GlobalArgs, view: &SendView) -> anyhow::Result<Response> {
+fn send_response(global_args: &GlobalArgs, view: &SendView) -> CommandResult {
     let value = serde_json::to_value(view)?;
     if global_args.response {
         Ok(Response::success(value))
@@ -163,7 +163,7 @@ pub async fn execute_send(
     cmd: SendCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     use SendCommands::*;
 
     match cmd {
@@ -203,7 +203,7 @@ async fn execute_send_create(
     cmd: SendCreateCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     require_session(global_args)?;
 
     let mut input = parse_send_input(&cmd.json)?;
@@ -263,7 +263,7 @@ async fn execute_send_edit(
     cmd: SendEditCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     require_session(global_args)?;
 
     let id = SendId::from_str(&cmd.id)
@@ -313,7 +313,7 @@ async fn execute_send_edit(
     send_response(global_args, &view)
 }
 
-fn execute_send_template(cmd: SendTemplateCommand) -> anyhow::Result<Response> {
+fn execute_send_template(cmd: SendTemplateCommand) -> CommandResult {
     let send_type = cmd.send_type.as_deref().unwrap_or("text").to_lowercase();
 
     let template = match send_type.as_str() {
@@ -349,7 +349,7 @@ fn execute_send_template(cmd: SendTemplateCommand) -> anyhow::Result<Response> {
             "hideEmail": false
         }),
         _ => {
-            return Ok(Response::error(format!(
+            return Err(anyhow::Error::msg(format!(
                 "Invalid send type: {}. Must be 'text' or 'file'",
                 send_type
             )));

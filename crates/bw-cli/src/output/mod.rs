@@ -1,19 +1,23 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
 mod formatter;
-pub use formatter::print_response;
+pub use formatter::{print_error, print_response};
 
-/// Response types matching TypeScript CLI Response class
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Response {
-    Success(SuccessResponse),
-    Error(ErrorResponse),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SuccessResponse {
+/// A command's successful output.
+///
+/// **There is no error variant, and that is the point.** A command reports
+/// failure by returning `Err` from its handler; success is the only thing this
+/// type can express.
+///
+/// It used to be an enum with an `Error` variant, so a handler signalled failure
+/// with `Ok(Response::error(..))` — an `Ok` that meant "it failed". `main`
+/// matched on `Result::Err` alone and returned `ExitCode::SUCCESS` for the whole
+/// `Ok` arm, so every failing command exited 0 (`BUGLIST.md` C31). That bug is
+/// fixed, but making the error variant unrepresentable is what stops the 65th
+/// call site from reintroducing it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Response {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
@@ -29,53 +33,31 @@ pub struct SuccessResponse {
     pub raw: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorResponse {
-    pub success: bool,
-    pub message: String,
-}
-
 impl Response {
-    /// Create a success response with data
-    pub fn success(data: impl Serialize) -> Self {
-        Response::Success(SuccessResponse {
+    fn new(data: Option<Value>, message: Option<String>) -> Self {
+        Response {
             success: true,
-            data: serde_json::to_value(data).ok(),
-            message: None,
+            data,
+            message,
             silent: false,
             raw: None,
-        })
+        }
+    }
+
+    /// Create a success response with data
+    pub fn success(data: impl Serialize) -> Self {
+        Self::new(serde_json::to_value(data).ok(), None)
     }
 
     /// Create a success response with just a message
     pub fn success_message(message: impl Into<String>) -> Self {
-        Response::Success(SuccessResponse {
-            success: true,
-            data: None,
-            message: Some(message.into()),
-            silent: false,
-            raw: None,
-        })
-    }
-
-    /// Create an error response
-    pub fn error(message: impl Into<String>) -> Self {
-        Response::Error(ErrorResponse {
-            success: false,
-            message: message.into(),
-        })
+        Self::new(None, Some(message.into()))
     }
 
     /// Create a success response with raw string data
     /// Used for commands that output plain text (like generate, encode)
     pub fn success_raw(data: impl Into<String>) -> Self {
-        Response::Success(SuccessResponse {
-            success: true,
-            data: Some(Value::String(data.into())),
-            message: None,
-            silent: false,
-            raw: None,
-        })
+        Self::new(Some(Value::String(data.into())), None)
     }
 
     /// A success that prints nothing.
@@ -84,13 +66,10 @@ impl Response {
     /// not add anything after it — `bw export` without `--output`, where the
     /// export document is the whole of stdout.
     pub fn silent() -> Self {
-        Response::Success(SuccessResponse {
-            success: true,
-            data: None,
-            message: None,
+        Response {
             silent: true,
-            raw: None,
-        })
+            ..Self::new(None, None)
+        }
     }
 
     /// Give `--raw` something different to print.
@@ -100,40 +79,20 @@ impl Response {
     /// the key so `export BW_SESSION=$(bw unlock --raw)` works. This mirrors the
     /// TypeScript CLI's `MessageResponse.raw`.
     pub fn with_raw(self, raw: impl Into<String>) -> Self {
-        match self {
-            Response::Success(s) => Response::Success(SuccessResponse {
-                raw: Some(raw.into()),
-                ..s
-            }),
-            error => error,
+        Response {
+            raw: Some(raw.into()),
+            ..self
         }
     }
 
     /// Create a success response with JSON data
     /// Convenience method for when you already have a JSON Value
     pub fn success_json(data: Value) -> Self {
-        Response::Success(SuccessResponse {
-            success: true,
-            data: Some(data),
-            message: None,
-            silent: false,
-            raw: None,
-        })
-    }
-
-    /// Check if this is a success response
-    pub fn is_success(&self) -> bool {
-        matches!(self, Response::Success(_))
-    }
-
-    /// Extract data as a specific type
-    pub fn data<T: for<'de> Deserialize<'de>>(&self) -> Option<T> {
-        match self {
-            Response::Success(s) => s
-                .data
-                .as_ref()
-                .and_then(|v| serde_json::from_value(v.clone()).ok()),
-            Response::Error(_) => None,
-        }
+        Self::new(Some(data), None)
     }
 }
+
+/// What a command handler returns: output on success, an error on failure.
+///
+/// Failure has exactly one representation. See [`Response`].
+pub type CommandResult = anyhow::Result<Response>;

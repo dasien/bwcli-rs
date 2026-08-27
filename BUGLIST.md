@@ -67,13 +67,15 @@ left alone.
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 | S9 | Attachment upload machinery is private; the generated endpoint sends no body | Worked around |
 
-**bwcli-rs** — 2 open, 30 fixed.
+**bwcli-rs** — 2 open, 32 fixed.
 
 | | Bug | Status |
 |---|---|---|
 | C27 | `bw get template` needs an unlocked vault | **Open** |
 | C30 | No local premium pre-check on attachment commands | **Open** |
 | C31 | Every failing command exited 0 | Fixed |
+| C32 | `--response` printed nothing when the vault was locked | Fixed |
+| C33 | Errors were prefixed `Error:`, unlike the TypeScript CLI | Fixed |
 | C23 | `bw move` collided with the TS CLI's org-share command | Fixed |
 | C24 | `bw get org` should be `bw get organization` | Fixed |
 | C25 | `bw encode` required an argument instead of reading stdin | Fixed |
@@ -316,6 +318,36 @@ found in a single afternoon of live testing after C12 made errors legible.
   paths and stdout contents on failures, but never an exit code on a failure. A
   whole class of bug sat outside what the assertions could see — the same shape
   as the network-crossing gap called out at the top of this file.
+
+#### C32. `--response` printed nothing when the vault was locked
+- **Command:** any vault command, e.g. `bw get item x --response`
+- **Location:** `bw-cli/src/main.rs` — the pre-flight session checks
+- **What happened:** the checks that run before a command (`AppContext::new`
+  failing, `unlock_sdk` failing, no session present) each did their own
+  `eprintln!` and returned early, bypassing the renderer entirely. Under
+  `--response` that meant **stdout was empty**: a caller parsing the
+  machine-readable output got no document at all, rather than a failure one.
+  `--quiet` was honoured by accident in two of the three, and `--cleanexit` by
+  hand in all three.
+- **Fix:** all three route through `fail()` -> `print_error`, the same renderer
+  every other failure uses. **Fixed**, with a regression test asserting
+  `"success":false` on stdout.
+- **Found by:** checking each output mode after Phase 1 of
+  `docs/cli-architecture-adoption.md`, rather than only the human one.
+
+#### C33. Errors were prefixed `Error:`, unlike the TypeScript CLI
+- **Command:** every failing command, in human (non-`--response`) mode
+- **Location:** `bw-cli/src/output/formatter.rs`, `bw-cli/src/main.rs`
+- **What happened:** two error paths disagreed. A `Response::error` under
+  `--raw` printed the bare message; everything else printed `Error: {message}`.
+  The TypeScript CLI writes `chalk.redBright(response.message)` and nothing more
+  (`clients/apps/cli/src/base-program.ts:30`), so the prefix was ours alone.
+- **Fix:** one renderer, bare message to stderr. Safe to change precisely
+  because the TypeScript CLI never emitted the prefix — no existing script can
+  depend on it, so removing it can only *increase* compatibility. **Fixed**,
+  with a regression test.
+- **Why it took a refactor to notice:** with the two paths in different
+  functions, neither looked wrong on its own.
 
 #### C23. `bw move` collided with the TypeScript CLI's org-share command
 - **Command:** `bw move <id> <organizationId> [encodedJson]`

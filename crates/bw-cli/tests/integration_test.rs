@@ -325,3 +325,54 @@ fn cleanexit_forces_success_on_a_handled_failure() {
 
     cmd.assert().success();
 }
+
+/// `--response` must emit a failure document, not nothing.
+///
+/// The pre-flight session check used to `eprintln!` and return before the
+/// renderer ran, so `bw get item x --response` printed *nothing at all* on a
+/// locked vault — the machine-readable mode gave no answer, and a caller
+/// parsing stdout saw empty input rather than an error.
+#[test]
+fn response_mode_emits_a_failure_document() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.env_remove("BW_SESSION")
+        .env_remove("BW_CLEANEXIT")
+        .args(["get", "item", "whatever", "--response"]);
+
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::contains(r#""success":false"#))
+        .stdout(predicate::str::contains("message"));
+}
+
+/// Errors carry no `Error:` prefix.
+///
+/// The TypeScript CLI writes `chalk.redBright(response.message)` and nothing
+/// else (`base-program.ts:30`), so a prefix is a parity divergence. Ours used to
+/// add one in human mode but not in raw mode — the two paths disagreed.
+#[test]
+fn errors_are_printed_bare_like_the_typescript_cli() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.env_remove("BW_SESSION")
+        .env_remove("BW_CLEANEXIT")
+        .args(["get", "item", "whatever"]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("Vault is locked"))
+        .stderr(predicate::str::starts_with("Error:").not());
+}
+
+/// `--quiet` suppresses failure output but not the failure itself.
+#[test]
+fn quiet_suppresses_error_output_but_not_the_exit_code() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.env_remove("BW_SESSION")
+        .env_remove("BW_CLEANEXIT")
+        .args(["get", "item", "whatever", "--quiet"]);
+
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::is_empty());
+}

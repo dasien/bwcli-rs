@@ -1,7 +1,7 @@
 use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::vault::{create_vault_service, create_write_service};
-use crate::output::Response;
+use crate::output::{CommandResult, Response};
 use clap::Args;
 
 #[derive(Args)]
@@ -105,7 +105,7 @@ pub async fn execute_generate(
     cmd: GenerateCommand,
     global_args: &GlobalArgs,
     _ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     use bitwarden_core::Client;
     use bitwarden_generators::{
         GeneratorClientsExt, PassphraseError, PassphraseGeneratorRequest, PasswordError,
@@ -203,7 +203,7 @@ pub async fn execute_encode(
     cmd: EncodeCommand,
     global_args: &GlobalArgs,
     _ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     use base64::{Engine as _, engine::general_purpose};
 
     let data = match cmd.data {
@@ -233,15 +233,15 @@ pub async fn execute_decrypt(
     _cmd: DecryptCommand,
     _global_args: &GlobalArgs,
     _ctx: &AppContext,
-) -> anyhow::Result<Response> {
-    Ok(Response::error("Not yet implemented"))
+) -> CommandResult {
+    Err(anyhow::Error::msg("Not yet implemented"))
 }
 
 pub async fn execute_import(
     cmd: ImportCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     use bw_core::services::import_export::{ImportOptions, ImportService};
     use std::collections::HashMap;
 
@@ -332,7 +332,7 @@ pub async fn execute_export(
     cmd: ExportCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     use bw_core::services::import_export::{ExportData, ExportOptions, ExportService};
     use secrecy::Secret;
     use std::sync::Arc;

@@ -1,6 +1,6 @@
 use crate::AppContext;
 use crate::GlobalArgs;
-use crate::output::Response;
+use crate::output::{CommandResult, Response};
 use bw_core::services::storage::AccountManager;
 use bw_core::services::vault::VaultService;
 use clap::Args;
@@ -21,7 +21,7 @@ pub async fn execute_sync(
     cmd: SyncCommand,
     _global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     // Use services from context
     let account_manager = Arc::new(AccountManager::new(ctx.storage()));
 
@@ -36,7 +36,7 @@ pub async fn execute_sync(
     if cmd.last {
         match vault_service.get_last_sync().await? {
             Some(timestamp) => Ok(Response::success_message(timestamp)),
-            None => Ok(Response::error("Never synced")),
+            None => Err(anyhow::Error::msg("Never synced")),
         }
     } else {
         // Perform sync
@@ -45,7 +45,7 @@ pub async fn execute_sync(
                 "Syncing complete. Last sync: {}",
                 timestamp
             ))),
-            Err(e) => Ok(Response::error(e.to_string())),
+            Err(e) => Err(anyhow::Error::msg(e.to_string())),
         }
     }
 }

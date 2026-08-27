@@ -4,7 +4,7 @@ mod prompts;
 mod vault_ops;
 
 use crate::GlobalArgs;
-use crate::output::Response;
+use crate::output::{CommandResult, Response};
 use clap::{Args, Subcommand};
 
 // Re-export command implementations
@@ -86,7 +86,7 @@ pub async fn execute_login(
     cmd: AuthCommands,
     global_args: &GlobalArgs,
     ctx: &crate::AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     match cmd {
         AuthCommands::Password(password_cmd) => {
             execute_password_login(password_cmd, global_args, ctx).await
@@ -94,7 +94,7 @@ pub async fn execute_login(
         AuthCommands::ApiKey(apikey_cmd) => {
             execute_api_key_login(apikey_cmd, global_args, ctx).await
         }
-        AuthCommands::Sso(_) => Ok(Response::error(
+        AuthCommands::Sso(_) => Err(anyhow::Error::msg(
             "SSO login is not yet implemented. It will be added in a future release.",
         )),
     }

@@ -29,7 +29,7 @@ assert on real stdout.
 
 ---
 
-## Phase 1 — `Result<CommandOutput>`: make C31 unrepresentable
+## Phase 1 — `Result<CommandOutput>`: make C31 unrepresentable — **DONE**
 
 **The defect this closes.** A handled failure is currently `Ok`:
 
@@ -65,7 +65,18 @@ libraries is a separate argument; don't bundle it.
 - Error *text* must be preserved verbatim. Integration tests assert on it, and
   users match against it.
 
-**Done when:** `Response::error` no longer exists, and 278 tests still pass.
+**Done when:** `Response::error` no longer exists, and the suite still passes.
+
+**Outcome.** `Response` is now a struct with no error variant; 63 call sites
+became `Err(anyhow::Error::msg(..))`; handlers return `CommandResult`. The dead
+`error.rs` — whose `into_response` was the literal C31 factory, converting
+business errors into `Ok(Response::error(..))` — was deleted; nothing used it.
+
+Centralising the renderer immediately exposed two further defects that the
+scattered version hid, both now fixed and logged: **C32** (`--response` printed
+*nothing* on a locked vault, because pre-flight checks bypassed the renderer)
+and **C33** (errors prefixed `Error:`, which the TypeScript CLI never emits).
+281 tests pass, up from 278.
 
 ---
 

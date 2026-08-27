@@ -2,7 +2,7 @@ use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::input::{parse_folder_input, parse_item_input};
 use crate::commands::templates::get_item_template;
-use crate::output::Response;
+use crate::output::{CommandResult, Response};
 use bw_core::models::vault::CipherView;
 use bw_core::services::storage::AccountManager;
 use bw_core::services::vault::{
@@ -431,7 +431,7 @@ fn save_attachment(
     output: Option<&str>,
     default_file_name: &str,
     raw: bool,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     use std::io::Write;
 
     if raw && output.is_none_or(str::is_empty) {
@@ -567,7 +567,7 @@ pub async fn execute_list(
     cmd: ListCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     let vault_service = create_vault_service(ctx);
 
     match cmd {
@@ -584,7 +584,7 @@ pub async fn execute_list(
 
             match vault_service.list_items(&filters, session).await {
                 Ok(items) => Ok(Response::success(items)),
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -595,7 +595,7 @@ pub async fn execute_list(
                 .await
             {
                 Ok(folders) => Ok(Response::success(folders)),
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -610,17 +610,17 @@ pub async fn execute_list(
                 .await
             {
                 Ok(collections) => Ok(Response::success(collections)),
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
         ListCommands::Organizations(_) => match vault_service.list_organizations().await {
             Ok(orgs) => Ok(Response::success(orgs)),
-            Err(e) => Ok(Response::error(e.to_string())),
+            Err(e) => Err(anyhow::Error::msg(e.to_string())),
         },
 
         ListCommands::OrgCollections(_) | ListCommands::OrgMembers(_) => {
-            Ok(Response::error("Not yet implemented"))
+            Err(anyhow::Error::msg("Not yet implemented"))
         }
     }
 }
@@ -630,7 +630,7 @@ pub async fn execute_get(
     cmd: GetCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     let vault_service = create_vault_service(ctx);
 
     match cmd {
@@ -638,7 +638,7 @@ pub async fn execute_get(
             let session = get_session(global_args)?;
             match vault_service.get_item(&item_cmd.id, session).await {
                 Ok(item) => Ok(Response::success(item)),
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -656,7 +656,7 @@ pub async fn execute_get(
                         Ok(Response::success(username))
                     }
                 }
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -674,7 +674,7 @@ pub async fn execute_get(
                         Ok(Response::success(password))
                     }
                 }
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -692,7 +692,7 @@ pub async fn execute_get(
                         Ok(Response::success(uri))
                     }
                 }
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -707,7 +707,7 @@ pub async fn execute_get(
                         Ok(Response::success(code))
                     }
                 }
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -721,13 +721,13 @@ pub async fn execute_get(
                                 println!("{}", json);
                                 Ok(Response::success_message(""))
                             }
-                            Err(e) => Ok(Response::error(e.to_string())),
+                            Err(e) => Err(anyhow::Error::msg(e.to_string())),
                         }
                     } else {
                         Ok(Response::success(template))
                     }
                 }
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -742,13 +742,13 @@ pub async fn execute_get(
                     }) {
                         Ok(Response::success(folder))
                     } else {
-                        Ok(Response::error(format!(
+                        Err(anyhow::Error::msg(format!(
                             "Folder not found: {}",
                             folder_cmd.id
                         )))
                     }
                 }
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -765,11 +765,11 @@ pub async fn execute_get(
                     &downloaded.file_name,
                     global_args.raw,
                 ),
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
-        _ => Ok(Response::error("Not yet implemented")),
+        _ => Err(anyhow::Error::msg("Not yet implemented")),
     }
 }
 
@@ -778,7 +778,7 @@ pub async fn execute_create(
     cmd: CreateCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     match cmd {
         CreateCommands::Item(item_cmd) => {
             let session = get_session(global_args)?;
@@ -786,7 +786,7 @@ pub async fn execute_create(
             // 1. Parse input (base64/JSON/stdin)
             let cipher_view = match parse_item_input(&item_cmd.json) {
                 Ok(view) => view,
-                Err(e) => return Ok(Response::error(format!("Invalid input: {}", e))),
+                Err(e) => return Err(anyhow::Error::msg(format!("Invalid input: {}", e))),
             };
 
             // 2. Create via WriteService
@@ -798,10 +798,10 @@ pub async fn execute_create(
                     let id_str = created.id.map(|id| id.to_string()).unwrap_or_default();
                     match vault_service.get_item(&id_str, session).await {
                         Ok(decrypted) => Ok(Response::success(decrypted)),
-                        Err(e) => Ok(Response::error(e.to_string())),
+                        Err(e) => Err(anyhow::Error::msg(e.to_string())),
                     }
                 }
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -811,7 +811,7 @@ pub async fn execute_create(
             // 1. Parse folder input
             let folder_input = match parse_folder_input(&folder_cmd.json) {
                 Ok(input) => input,
-                Err(e) => return Ok(Response::error(format!("Invalid input: {}", e))),
+                Err(e) => return Err(anyhow::Error::msg(format!("Invalid input: {}", e))),
             };
 
             // 2. Create via WriteService
@@ -828,13 +828,13 @@ pub async fn execute_create(
                             if let Some(folder) = folders.iter().find(|f| f.id == created.id) {
                                 Ok(Response::success(folder))
                             } else {
-                                Ok(Response::error("Folder created but not found in cache"))
+                                Err(anyhow::Error::msg("Folder created but not found in cache"))
                             }
                         }
-                        Err(e) => Ok(Response::error(e.to_string())),
+                        Err(e) => Err(anyhow::Error::msg(e.to_string())),
                     }
                 }
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -843,7 +843,7 @@ pub async fn execute_create(
 
             let path = std::path::PathBuf::from(&attachment_cmd.file);
             if !path.is_file() {
-                return Ok(Response::error(format!(
+                return Err(anyhow::Error::msg(format!(
                     "Cannot find file at {}",
                     path.display()
                 )));
@@ -854,12 +854,12 @@ pub async fn execute_create(
                 .await
             {
                 Ok(item) => Ok(Response::success(item)),
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
         CreateCommands::OrgCollection(_) => {
-            Ok(Response::error("Not yet implemented"))
+            Err(anyhow::Error::msg("Not yet implemented"))
         }
     }
 }
@@ -869,7 +869,7 @@ pub async fn execute_edit(
     cmd: EditCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     match cmd {
         EditCommands::Item(item_cmd) => {
             let session = get_session(global_args)?;
@@ -879,14 +879,14 @@ pub async fn execute_edit(
             let existing = match vault_service.get_item(&item_cmd.id, session).await {
                 Ok(item) => item,
                 Err(VaultError::ItemNotFound) => {
-                    return Ok(Response::error(format!("Item not found: {}", item_cmd.id)));
+                    return Err(anyhow::Error::msg(format!("Item not found: {}", item_cmd.id)));
                 }
-                Err(e) => return Ok(Response::error(e.to_string())),
+                Err(e) => return Err(anyhow::Error::msg(e.to_string())),
             };
 
             // 2. Check not deleted
             if existing.deleted_date.is_some() {
-                return Ok(Response::error(
+                return Err(anyhow::Error::msg(
                     "Cannot edit items in trash. Use 'bw restore' first.",
                 ));
             }
@@ -894,7 +894,7 @@ pub async fn execute_edit(
             // 3. Parse input and merge
             let updates = match parse_item_input(&item_cmd.json) {
                 Ok(view) => view,
-                Err(e) => return Ok(Response::error(format!("Invalid input: {}", e))),
+                Err(e) => return Err(anyhow::Error::msg(format!("Invalid input: {}", e))),
             };
             let merged = merge_cipher_views(existing, updates);
 
@@ -909,10 +909,10 @@ pub async fn execute_edit(
                     let id_str = updated.id.map(|id| id.to_string()).unwrap_or_default();
                     match vault_service.get_item(&id_str, session).await {
                         Ok(decrypted) => Ok(Response::success(decrypted)),
-                        Err(e) => Ok(Response::error(e.to_string())),
+                        Err(e) => Err(anyhow::Error::msg(e.to_string())),
                     }
                 }
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -922,7 +922,7 @@ pub async fn execute_edit(
             // 1. Parse folder input
             let folder_input = match parse_folder_input(&folder_cmd.json) {
                 Ok(input) => input,
-                Err(e) => return Ok(Response::error(format!("Invalid input: {}", e))),
+                Err(e) => return Err(anyhow::Error::msg(format!("Invalid input: {}", e))),
             };
 
             // 2. Update via WriteService
@@ -942,18 +942,18 @@ pub async fn execute_edit(
                             }) {
                                 Ok(Response::success(folder))
                             } else {
-                                Ok(Response::error("Folder updated but not found in cache"))
+                                Err(anyhow::Error::msg("Folder updated but not found in cache"))
                             }
                         }
-                        Err(e) => Ok(Response::error(e.to_string())),
+                        Err(e) => Err(anyhow::Error::msg(e.to_string())),
                     }
                 }
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
         EditCommands::ItemCollections(_) | EditCommands::OrgCollection(_) => {
-            Ok(Response::error("Not yet implemented"))
+            Err(anyhow::Error::msg("Not yet implemented"))
         }
     }
 }
@@ -963,7 +963,7 @@ pub async fn execute_delete(
     cmd: DeleteCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     // Validate session early for consistent error messages
     // (even though delete operations don't need encryption)
     let _session = get_session(global_args)?;
@@ -988,9 +988,9 @@ pub async fn execute_delete(
                     Ok(Response::success_message("Deletion cancelled"))
                 }
                 Err(VaultError::ItemNotFound) => {
-                    Ok(Response::error(format!("Item not found: {}", item_cmd.id)))
+                    Err(anyhow::Error::msg(format!("Item not found: {}", item_cmd.id)))
                 }
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -999,11 +999,11 @@ pub async fn execute_delete(
 
             match write_service.delete_folder(&folder_cmd.id).await {
                 Ok(_) => Ok(Response::success_message("Folder deleted")),
-                Err(VaultError::FolderNotFound) => Ok(Response::error(format!(
+                Err(VaultError::FolderNotFound) => Err(anyhow::Error::msg(format!(
                     "Folder not found: {}",
                     folder_cmd.id
                 ))),
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
@@ -1015,12 +1015,12 @@ pub async fn execute_delete(
                 .await
             {
                 Ok(()) => Ok(Response::success_message("Attachment deleted.")),
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
         DeleteCommands::OrgCollection(_) => {
-            Ok(Response::error("Not yet implemented"))
+            Err(anyhow::Error::msg("Not yet implemented"))
         }
     }
 }
@@ -1030,7 +1030,7 @@ pub async fn execute_restore(
     cmd: RestoreCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     let RestoreCommands::Item(cmd) = cmd;
     let session = get_session(global_args)?;
     let write_service = create_write_service(ctx, global_args.nointeraction);
@@ -1042,12 +1042,12 @@ pub async fn execute_restore(
             let id_str = restored.id.map(|id| id.to_string()).unwrap_or_default();
             match vault_service.get_item(&id_str, session).await {
                 Ok(decrypted) => Ok(Response::success(decrypted)),
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
-        Err(VaultError::ItemNotDeleted) => Ok(Response::error("Item is not in trash")),
-        Err(VaultError::ItemNotFound) => Ok(Response::error(format!("Item not found: {}", cmd.id))),
-        Err(e) => Ok(Response::error(e.to_string())),
+        Err(VaultError::ItemNotDeleted) => Err(anyhow::Error::msg("Item is not in trash")),
+        Err(VaultError::ItemNotFound) => Err(anyhow::Error::msg(format!("Item not found: {}", cmd.id))),
+        Err(e) => Err(anyhow::Error::msg(e.to_string())),
     }
 }
 
@@ -1056,13 +1056,13 @@ pub async fn execute_move(
     cmd: MoveCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     let _session = get_session(global_args)?;
     let write_service = create_write_service(ctx, global_args.nointeraction);
 
     let collection_ids = match parse_collection_ids(cmd.encoded_json.as_deref()) {
         Ok(ids) => ids,
-        Err(e) => return Ok(Response::error(e.to_string())),
+        Err(e) => return Err(anyhow::Error::msg(e.to_string())),
     };
 
     match write_service
@@ -1071,9 +1071,9 @@ pub async fn execute_move(
     {
         Ok(shared) => Ok(Response::success(shared)),
         Err(VaultError::ItemNotFound) => {
-            Ok(Response::error(format!("Item not found: {}", cmd.id)))
+            Err(anyhow::Error::msg(format!("Item not found: {}", cmd.id)))
         }
-        Err(e) => Ok(Response::error(e.to_string())),
+        Err(e) => Err(anyhow::Error::msg(e.to_string())),
     }
 }
 
@@ -1173,7 +1173,7 @@ pub async fn execute_move_to_folder(
     cmd: MoveToFolderCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     let session = get_session(global_args)?;
     let write_service = create_write_service(ctx, global_args.nointeraction);
 
@@ -1194,17 +1194,17 @@ pub async fn execute_move_to_folder(
             let vault_service = create_vault_service(ctx);
             match vault_service.get_item(&cmd.item_id, session).await {
                 Ok(decrypted) => Ok(Response::success(decrypted)),
-                Err(e) => Ok(Response::error(e.to_string())),
+                Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
         Err(VaultError::ItemNotFound) => {
-            Ok(Response::error(format!("Item not found: {}", cmd.item_id)))
+            Err(anyhow::Error::msg(format!("Item not found: {}", cmd.item_id)))
         }
-        Err(VaultError::FolderNotFound) => Ok(Response::error(format!(
+        Err(VaultError::FolderNotFound) => Err(anyhow::Error::msg(format!(
             "Folder not found: {}",
             cmd.folder_id.as_deref().unwrap_or("(none)")
         ))),
-        Err(e) => Ok(Response::error(e.to_string())),
+        Err(e) => Err(anyhow::Error::msg(e.to_string())),
     }
 }
 
@@ -1212,8 +1212,8 @@ pub async fn execute_confirm(
     _cmd: ConfirmCommand,
     _global_args: &GlobalArgs,
     _ctx: &AppContext,
-) -> anyhow::Result<Response> {
-    Ok(Response::error("Not yet implemented"))
+) -> CommandResult {
+    Err(anyhow::Error::msg("Not yet implemented"))
 }
 
 #[cfg(test)]

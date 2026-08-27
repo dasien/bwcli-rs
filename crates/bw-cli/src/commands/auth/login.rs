@@ -1,7 +1,7 @@
 use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::auth::{LoginApiKeyCommand, LoginPasswordCommand, input, prompts};
-use crate::output::Response;
+use crate::output::{CommandResult, Response};
 use anyhow::Result;
 use bw_core::models::auth::TwoFactorMethod;
 use bw_core::services::auth::{AuthError, AuthService};
@@ -12,7 +12,7 @@ pub async fn execute_password_login(
     cmd: LoginPasswordCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> Result<Response> {
+) -> CommandResult {
     // Use services from context
     let auth_service = AuthService::new(ctx.storage(), ctx.api_client(), Arc::new(ctx.sdk().clone()));
 
@@ -87,7 +87,7 @@ pub async fn execute_api_key_login(
     cmd: LoginApiKeyCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> Result<Response> {
+) -> CommandResult {
     // Use services from context
     let auth_service = AuthService::new(ctx.storage(), ctx.api_client(), Arc::new(ctx.sdk().clone()));
 

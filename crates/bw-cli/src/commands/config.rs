@@ -1,6 +1,6 @@
 use crate::AppContext;
 use crate::GlobalArgs;
-use crate::output::Response;
+use crate::output::{CommandResult, Response};
 use clap::{Args, Subcommand};
 
 #[derive(Args)]
@@ -26,6 +26,6 @@ pub async fn execute_config(
     _cmd: ConfigCommand,
     _global_args: &GlobalArgs,
     _ctx: &AppContext,
-) -> anyhow::Result<Response> {
-    Ok(Response::error("Not yet implemented"))
+) -> CommandResult {
+    Err(anyhow::Error::msg("Not yet implemented"))
 }

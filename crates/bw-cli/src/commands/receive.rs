@@ -1,6 +1,6 @@
 use crate::AppContext;
 use crate::GlobalArgs;
-use crate::output::Response;
+use crate::output::{CommandResult, Response};
 use bitwarden_auth::AuthClientExt;
 use bitwarden_auth::send_access::{
     SendAccessCredentials, SendAccessTokenRequest, SendPasswordCredentials,
@@ -52,7 +52,7 @@ pub async fn execute_receive(
     cmd: ReceiveCommand,
     _global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     // Receiving is anonymous: no login, no unlock, no session key.
     let (access_id, key_b64) = parse_send_url(&cmd.url)?;
 

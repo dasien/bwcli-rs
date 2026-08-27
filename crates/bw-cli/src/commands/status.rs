@@ -1,6 +1,6 @@
 use crate::AppContext;
 use crate::GlobalArgs;
-use crate::output::Response;
+use crate::output::{CommandResult, Response};
 use bw_core::services::sdk_session;
 use bw_core::services::storage::AccountManager;
 use bw_core::services::vault::VaultService;
@@ -32,7 +32,7 @@ pub async fn execute_status(
     _cmd: StatusCommand,
     _global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<Response> {
+) -> CommandResult {
     // Use services from context
     let storage = ctx.storage();
 

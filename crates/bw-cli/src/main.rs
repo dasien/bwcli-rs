@@ -114,6 +114,24 @@ enum Commands {
     Status(commands::StatusCommand),
 }
 
+/// Render a startup failure and pick the exit code.
+///
+/// The pre-flight checks below run before any command does, but their failures
+/// are still command failures: they must honour `--quiet`, must produce the
+/// `--response` JSON document, and must respect `--cleanexit`. They used to
+/// `eprintln!` directly and return, so `bw <cmd> --response` printed *nothing*
+/// when the vault was locked — the machine-readable mode silently emitted no
+/// answer at all. Routing them through the same renderer as every other failure
+/// is the point of having one.
+fn fail(error: &anyhow::Error, args: &GlobalArgs) -> ExitCode {
+    output::print_error(error, args);
+    if args.cleanexit {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     // Initialize tracing
@@ -133,16 +151,7 @@ async fn main() -> ExitCode {
     // Initialize application context (services) once
     let ctx = match AppContext::new().await {
         Ok(ctx) => ctx,
-        Err(e) => {
-            if !cli.global_args.quiet {
-                eprintln!("Failed to initialize: {:#}", e);
-            }
-            return if cli.global_args.cleanexit {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            };
-        }
+        Err(e) => return fail(&e.context("Failed to initialize"), &cli.global_args),
     };
 
     // The SDK client starts each process with an empty key store, so a session
@@ -156,28 +165,17 @@ async fn main() -> ExitCode {
         match cli.global_args.session.as_deref() {
             Some(session) if !session.is_empty() => {
                 if let Err(e) = ctx.container().unlock_sdk(session).await {
-                    if !cli.global_args.quiet {
-                        eprintln!("Error: {:#}", e);
-                        eprintln!("Run 'bw unlock' to get a new session key.");
-                    }
-                    return if cli.global_args.cleanexit {
-                        ExitCode::SUCCESS
-                    } else {
-                        ExitCode::FAILURE
-                    };
+                    let e = e.context("Run 'bw unlock' to get a new session key.");
+                    return fail(&e, &cli.global_args);
                 }
             }
             _ => {
-                if !cli.global_args.quiet {
-                    eprintln!(
-                        "Error: Vault is locked. Run 'bw unlock' and set BW_SESSION."
-                    );
-                }
-                return if cli.global_args.cleanexit {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::FAILURE
-                };
+                return fail(
+                    &anyhow::Error::msg(
+                        "Vault is locked. Run 'bw unlock' and set BW_SESSION.",
+                    ),
+                    &cli.global_args,
+                );
             }
         }
     }
@@ -185,33 +183,16 @@ async fn main() -> ExitCode {
     // Execute command and format output
     let result = execute_command(cli.command, &cli.global_args, &ctx).await;
 
-    let exit_code = match result {
+    // `Ok` is success and `Err` is failure, with no third case to get wrong.
+    // C31 was the absence of that guarantee: handlers returned an error *inside*
+    // `Ok`, so the exit code and the printed message could disagree.
+    match result {
         Ok(response) => {
-            // A command reports a *handled* failure by returning `Ok` around an
-            // error `Response` — only unhandled errors reach the `Err` arm. So
-            // the response has to be consulted too, or `bw get item nope` exits
-            // 0 and every `bw ... && ...` script treats the failure as success.
-            let failed = !response.is_success();
             output::print_response(response, &cli.global_args);
-            if failed && !cli.global_args.cleanexit {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            }
+            ExitCode::SUCCESS
         }
-        Err(e) => {
-            if !cli.global_args.quiet {
-                eprintln!("Error: {:#}", e);
-            }
-            if cli.global_args.cleanexit {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            }
-        }
-    };
-
-    exit_code
+        Err(e) => fail(&e, &cli.global_args),
+    }
 }
 
 /// Whether a command reads or writes vault data and therefore needs the key
@@ -269,8 +250,6 @@ async fn execute_command(
 // Module declarations
 mod commands;
 mod context;
-mod error;
 mod output;
 
 pub use context::AppContext;
-pub use error::CliError;
