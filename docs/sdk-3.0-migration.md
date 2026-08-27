@@ -189,10 +189,11 @@ Working: `login` (password + API key, 2FA, new-device OTP), `logout`, `lock`,
 `edit item|folder`, `delete item|folder`, `restore item`, `generate`, `encode`,
 `import`, `export`, text Sends, `receive`, `move-to-folder`.
 
-`create|get|delete attachment` are implemented but **not yet verified against a
-live server** — see the note under the survey, and treat them as unproven until
-someone runs them against a real vault. Nothing about them is covered by a test
-that crosses the network, which is precisely the gap that hid C4, C25 and C28.
+`create|get|delete attachment` are implemented and **verified against a live
+server on 2026-08-27**: upload, download, decrypt and delete all round-trip
+byte-identically, including a 4 KiB random binary. The unit tests still do not
+cross the network — that gap is unchanged, and it is what hid C4, C25 and C28 —
+so the evidence here is the recorded live run, not the suite.
 
 `move` / `share` (org-share) works, verified end to end against a real
 organization. Organization keys now reach the key store via `sync`, which is also

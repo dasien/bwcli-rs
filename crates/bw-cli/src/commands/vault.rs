@@ -458,23 +458,26 @@ fn save_attachment(
 }
 
 /// Resolve `--output` into a concrete path. See [`save_attachment`].
+///
+/// Always absolute. The TypeScript CLI ends `CliUtils.saveFile` with
+/// `path.resolve(p)` and reports *that*, so `--raw` hands a script an absolute
+/// path regardless of which `--output` form was used. Returning a relative path
+/// for some forms and an absolute one for others — which this did — breaks any
+/// caller that changes directory before using it.
 fn attachment_output_path(output: Option<&str>, default_file_name: &str) -> std::path::PathBuf {
-    let cwd = std::env::current_dir().unwrap_or_default();
-
-    let Some(output) = output.filter(|o| !o.is_empty()) else {
-        return cwd.join(default_file_name);
+    let relative = match output.filter(|o| !o.is_empty()) {
+        // A bare name is a file in the working directory, not a directory to create.
+        Some(out) if !out.contains(std::path::MAIN_SEPARATOR) => std::path::PathBuf::from(out),
+        Some(out) if out.ends_with(std::path::MAIN_SEPARATOR) => {
+            std::path::Path::new(out).join(default_file_name)
+        }
+        Some(out) => std::path::PathBuf::from(out),
+        None => std::path::PathBuf::from(default_file_name),
     };
 
-    // A bare name is a file in the working directory, not a directory to create.
-    if !output.contains(std::path::MAIN_SEPARATOR) {
-        return cwd.join(output);
-    }
-
-    if output.ends_with(std::path::MAIN_SEPARATOR) {
-        std::path::Path::new(output).join(default_file_name)
-    } else {
-        std::path::PathBuf::from(output)
-    }
+    // `absolute` rather than `canonicalize`: the file does not exist yet, and
+    // canonicalize fails on a path whose final component is missing.
+    std::path::absolute(&relative).unwrap_or(relative)
 }
 
 /// Best-effort permissions tightening; a filesystem without unix modes is not a
@@ -1256,7 +1259,7 @@ mod tests {
         let out = format!("out{MAIN_SEPARATOR}sub{MAIN_SEPARATOR}");
         assert_eq!(
             attachment_output_path(Some(&out), "photo.jpg"),
-            PathBuf::from(format!("out{MAIN_SEPARATOR}sub")).join("photo.jpg")
+            cwd().join("out").join("sub").join("photo.jpg")
         );
     }
 
@@ -1265,8 +1268,26 @@ mod tests {
         let out = format!("out{MAIN_SEPARATOR}renamed.jpg");
         assert_eq!(
             attachment_output_path(Some(&out), "photo.jpg"),
-            PathBuf::from(&out)
+            cwd().join("out").join("renamed.jpg")
         );
+    }
+
+    /// Every form resolves to an absolute path, as `path.resolve` does in the
+    /// TypeScript CLI. `--raw` returns this to the caller, so a relative path
+    /// would break a script that changes directory before using it.
+    #[test]
+    fn every_output_form_resolves_to_an_absolute_path() {
+        let forms = [
+            None,
+            Some(""),
+            Some("renamed.jpg"),
+            Some("out/sub/"),
+            Some("out/renamed.jpg"),
+        ];
+        for form in forms {
+            let path = attachment_output_path(form, "photo.jpg");
+            assert!(path.is_absolute(), "{form:?} produced {}", path.display());
+        }
     }
 
     #[test]

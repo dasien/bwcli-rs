@@ -266,7 +266,7 @@ does nothing while reporting success.
 | File | What it gives you |
 |---|---|
 | `docs/sdk-3.0-migration.md` | why the migration went the way it did: the SDK-native decision, phases 1–10, the parity matrix, the per-stub SDK-capability survey, and the "do not adopt" list with reasons |
-| `BUGLIST.md` | every defect found, SDK and ours, open and fixed — 2 open, 30 fixed, 9 SDK. Read the header: ids are stable, corrections are noted in place |
+| `BUGLIST.md` | every defect found, SDK and ours, open and fixed — 2 open, 33 fixed, 9 SDK. Read the header: ids are stable, corrections are noted in place |
 | `git log master..sdk-3.0-migration` | the commit messages carry the reasoning and the live-verification results |
 
 Two themes to absorb before trusting the suite:
@@ -292,19 +292,15 @@ tokens, vault reads and writes, the `data.json` carry-over, and org-share.
 
 Next, in the value order the SDK survey implies:
 
-1. **Attachments** — **implemented; verification blocked on account entitlements.**
-   `create`/`get`/`delete attachment` are in
-   `bw-core/src/services/vault/attachment_service.rs`. The byte upload had to be
-   reimplemented (`BUGLIST.md` S9) and **that reimplementation is still unproven.**
-   A live run on 2026-08-23 got two server rejections before reaching it:
-   `"You must have premium status to use attachments."` on a personally-owned
-   item, then `"Not enough storage available."` on an org-owned one
-   (Rust Test Org has `maxStorageGb: null`). Use the org-owned fixture item in §4
-   for the retest — a personally-owned item cannot get past the first gate at all.
-   Everything up to the upload is
-   exercised — encryption, auth, request serialization, and a clean no-orphan
-   failure. The upload, download, decrypt, round trip and rollback are not.
-   **Needs premium on the test account or storage on the org.** See §7.
+1. **Attachments** — **done and verified live on 2026-08-27.** `create`/`get`/
+   `delete attachment` in `bw-core/src/services/vault/attachment_service.rs`.
+   The hand-rolled upload transport (`BUGLIST.md` S9) is proven: `create` then
+   `get --raw` returns byte-identical content for a text file, a 4 KiB random
+   binary and a multibyte UTF-8 file. Filename and substring lookup, ambiguity
+   refusal, all three `--output` forms with 0600/0700 modes, and delete-by-id
+   were all exercised against the real server. The run found C34.
+   Still not covered: the orphaned-slot rollback, which needs an upload to fail
+   after the slot is created — no way to force that from outside.
 2. **`get organization` and `get collection`** — stubbed for no remaining reason;
    both are lookups over data already decrypted locally.
 3. **`edit item-collections`** — one call to `CiphersClient::bulk_update_collections`.

@@ -67,13 +67,14 @@ left alone.
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 | S9 | Attachment upload machinery is private; the generated endpoint sends no body | Worked around |
 
-**bwcli-rs** — 2 open, 32 fixed.
+**bwcli-rs** — 2 open, 33 fixed.
 
 | | Bug | Status |
 |---|---|---|
 | C27 | `bw get template` needs an unlocked vault | **Open** |
 | C30 | No local premium pre-check on attachment commands | **Open** |
 | C31 | Every failing command exited 0 | Fixed |
+| C34 | `--output` reported a relative path for some forms | Fixed |
 | C32 | `--response` printed nothing when the vault was locked | Fixed |
 | C33 | Errors were prefixed `Error:`, unlike the TypeScript CLI | Fixed |
 | C23 | `bw move` collided with the TS CLI's org-share command | Fixed |
@@ -252,6 +253,11 @@ found in a single afternoon of live testing after C12 made errors legible.
 - **Our fix:** `AttachmentService::upload` reimplements both transports —
   unauthenticated `PUT` for Azure presigned URLs, authenticated multipart `POST`
   for `Direct`. **Worked around.** Delete it if the SDK exposes its uploader.
+- **Verified live 2026-08-27**, once the test account had premium. `create
+  attachment` then `get attachment --raw` returns byte-identical content
+  (SHA-256 match) for a text file, a 4 KiB random binary, and a multibyte UTF-8
+  file. The binary case is the one that matters: it proves the transport and the
+  download path carry arbitrary bytes without treating them as text.
 - **Knock-on:** the multipart form must be built with the SDK's reqwest (0.13),
   not the workspace's (0.12), because `ClientWithMiddleware::multipart` takes the
   0.13 `Form` type. Hence the `reqwest_sdk` alias in the workspace manifest.
@@ -318,6 +324,23 @@ found in a single afternoon of live testing after C12 made errors legible.
   paths and stdout contents on failures, but never an exit code on a failure. A
   whole class of bug sat outside what the assertions could see — the same shape
   as the network-crossing gap called out at the top of this file.
+
+#### C34. `--output` reported a relative path for some forms
+- **Command:** `bw get attachment <id> --itemid <id> --output <path>`
+- **Location:** `bw-cli/src/commands/vault.rs` — `attachment_output_path`
+- **What happened:** a bare `--output name.txt` reported an absolute path, but
+  `--output dir/` and `--output dir/name.txt` reported the relative path as
+  given. `CliUtils.saveFile` in the TypeScript CLI ends with `path.resolve(p)`
+  and reports that, so it is always absolute.
+- **Why it matters:** `--raw` returns this path as the command's value. A script
+  doing `OUT=$(bw get attachment .. --output dir/ --raw)` and then changing
+  directory resolves it against the wrong base.
+- **Fix:** `std::path::absolute` on every form. Not `canonicalize`, which fails
+  when the final component does not exist yet — and it never does here.
+  **Fixed**, with a test asserting all five `--output` forms are absolute.
+- **Found by:** the live attachment run, by *reading the reported paths* rather
+  than only checking the files landed. Both forms wrote correct contents to the
+  correct place; only the reported value differed.
 
 #### C32. `--response` printed nothing when the vault was locked
 - **Command:** any vault command, e.g. `bw get item x --response`
