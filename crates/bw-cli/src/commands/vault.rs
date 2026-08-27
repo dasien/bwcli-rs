@@ -419,7 +419,7 @@ pub(crate) fn create_write_service(ctx: &AppContext, no_interaction: bool) -> Wr
 /// - trailing separator (`out/`) — a directory; the attachment keeps its own name
 /// - otherwise (`out/photo.jpg`) — a full path
 ///
-/// Parent directories are created for the last two, as upstream does. Modes match
+/// Parent directories are created for the last two, as the TypeScript CLI does. Modes match
 /// too: `0600` for the file, `0700` for directories, because attachment contents
 /// are as sensitive as the vault they came from.
 ///
@@ -1243,7 +1243,7 @@ mod tests {
 
     #[test]
     fn a_bare_name_renames_the_file_in_the_working_directory() {
-        // Notably *not* a directory to create — upstream only mkdirs when the
+        // Notably *not* a directory to create — the TypeScript CLI only mkdirs when the
         // output contains a separator.
         assert_eq!(
             attachment_output_path(Some("renamed.jpg"), "photo.jpg"),

@@ -11,7 +11,7 @@ defects that analysis turned up along the way.
   the local checkout, with 22 new crates.
 - Strategy: **adopt SDK crates, stay an independent CLI.** Upstream's own
   `crates/bw` is a reference implementation to crib from, not a destination.
-- SDK consumption: **track upstream main.** Do each migration against a fixed
+- SDK consumption: **track the SDK's main.** Do each migration against a fixed
   commit (currently `9794da58`) so the target doesn't move mid-change, then
   resume tracking.
 
@@ -37,13 +37,13 @@ writes a different shape. The two were already mutually incompatible; keeping
 Secondary benefit: letting the SDK own tokens removes the class of bug that
 produced the deadlocked, `client_id`-less, unflushed refresh path.
 
-## SDK export gap found in step 4 (worth reporting upstream)
+## SDK export gap found in step 4 (worth reporting to the SDK team)
 
 `CiphersClient::create`/`edit` and `FoldersClient::create`/`edit` take request
 types — `CipherCreateRequest`, `CipherEditRequest`, `FolderAddEditRequest` —
 that `bitwarden-vault` does not export; `cipher_client` is `pub(crate)`. The
 methods are therefore uncallable from outside the crate, and nothing in the SDK
-tree calls them: not the wasm bindings, not uniffi, not upstream `bw`.
+tree calls them: not the wasm bindings, not uniffi, not `crates/bw`.
 `FoldersClient` has no `delete` at all.
 
 Consequence: vault writes are split, each side forced rather than chosen.
@@ -241,9 +241,12 @@ the exact TS `data.json` key holding the account private key.
    own reqwest `BitwardenApiClient`/`TokenManager`); self-hosted URL derivation
    disagrees between them (`{base}/api/api` vs `{base}/api`).
 4. `send`, `receive`, `import`, `export` are all **stubs**.
-5. bwcli-rs is substantially **ahead of upstream `crates/bw`**, whose command
-   bodies are mostly `todo!()`. Upstream is finished on send/receive, `generate`
-   parity, `config server`, and completions.
+5. bwcli-rs is substantially **ahead of `crates/bw`** on coverage, whose command
+   bodies are mostly `todo!()` (18 of them; no vault writes at all). `crates/bw`
+   is finished on send/receive, `generate` parity, `config server`, and
+   completions. Its *architecture*, however, is better than ours in three ways
+   that each map to a bug we shipped — see
+   `docs/cli-architecture-adoption.md`.
 
 ## Phases
 
@@ -281,7 +284,7 @@ Ordered so correctness work lands on a green build, before the large migration.
       or wrong and are annotated as such rather than "fixed".
 - [x] **5. Migrate to SDK 3.0.0** — done against `../sdk-internal` @ `9794da58`.
       `rust-version` 1.88.0; **no toolchain bump was needed** — the SDK builds on
-      the existing 1.91.1 pin despite upstream pinning 1.97.1. 15 breaks fixed:
+      the existing 1.91.1 pin despite the SDK pinning 1.97.1. 15 breaks fixed:
       `ClientSettings` (+2 fields; now built with `..default()` so future field
       additions don't break it), `InitUserCryptoRequest::upgrade_token`,
       `SymmetricCryptoKey::make(SymmetricKeyAlgorithm::Aes256CbcHmac)`,
@@ -414,7 +417,7 @@ context; the bug list is the running record.
   type whose server-owned fields (`creationDate`, `revisionDate`, `edit`,
   `viewPassword`, `organizationUseTotp`) are required. Fixed with a lenient
   `CipherInput` DTO that defaults everything and fills server-owned fields —
-  the same shape upstream uses for sends (`SendJsonInput`). Guarded by
+  the same shape `crates/bw` uses for sends (`SendJsonInput`). Guarded by
   `test_item_templates_are_parseable`, which round-trips every item template.
   Not a 3.0 regression; it was broken at 2.0.0 too.
 - **Importing an empty file reported success.** A header-only or empty file

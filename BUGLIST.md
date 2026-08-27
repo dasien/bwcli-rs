@@ -18,7 +18,7 @@ Legend for **Status**:
 | | |
 |---|---|
 | **Fixed** | fixed in this repo, with a test unless noted |
-| **Worked around** | the defect is upstream; we compensate locally |
+| **Worked around** | the defect is in the SDK; we compensate locally |
 | **Open** | known, not addressed |
 | **Won't fix** | deliberately left, with a reason |
 
@@ -30,9 +30,29 @@ path — verifying reads is much weaker evidence than it feels like.
 
 ---
 
+## Three projects, three names — never "upstream"
+
+The word *upstream* used to appear here for all three of these, which made
+several entries ambiguous about who could actually fix a thing. Name the project:
+
+| Name | What it is | Where |
+|---|---|---|
+| **the SDK** | `bitwarden-*` crates we build against | `../sdk-internal/crates/bitwarden-*` |
+| **`crates/bw`** | Bitwarden's *own* Rust CLI — a separate effort from this one, living in the SDK repo | `../sdk-internal/crates/bw` |
+| **the TypeScript CLI** | the shipping `bw`, our parity reference | `../Bitwarden/clients/apps/cli` |
+
+The distinction is not pedantry. "Worth reporting upstream" means nothing without
+knowing whether the fix belongs to the SDK team, to `crates/bw`, or to a parity
+gap against the TypeScript CLI — three different owners and three different
+outcomes. `crates/bw` is a peer consumer of the SDK, not our supplier: it hits
+the same `pub(crate)` walls we do (see S2, S3), which is *evidence* about the
+SDK rather than a place to send a patch.
+
+---
+
 ## Index
 
-**SDK (`sdk-internal`)** — none fixed upstream; all either worked around here or
+**SDK (`sdk-internal`)** — none fixed in the SDK; all either worked around here or
 left alone.
 
 | | Bug | Status |
@@ -89,7 +109,7 @@ found in a single afternoon of live testing after C12 made errors legible.
 
 ---
 
-## SDK bugs (`sdk-internal`) — worth reporting upstream
+## SDK bugs (`sdk-internal`) — worth reporting to the SDK team
 
 ### Open / worked around
 
@@ -110,7 +130,7 @@ found in a single afternoon of live testing after C12 made errors legible.
 - **Our fix:** `sdk_session::initialize_crypto` snapshots the login method,
   calls through, then restores it — treating a blank `client_id` as absent so a
   first login gets a correct one written instead. **Worked around** (`sdk_session.rs`).
-- **Proposed upstream fix:** don't touch `USER_LOGIN_METHOD` here at all; it is
+- **Proposed SDK fix:** don't touch `USER_LOGIN_METHOD` here at all; it is
   not this function's state. Failing that, preserve an existing method's variant
   and `client_id`, and take the `client_id` as a parameter.
 - **Tests:** `initializing_crypto_leaves_a_usable_login_method`,
@@ -124,14 +144,14 @@ found in a single afternoon of live testing after C12 made errors legible.
   unexported. `FoldersClient` has no `delete` at all.
 - **What happens:** `CiphersClient::create`/`edit` and `FoldersClient::create`/`edit`
   are `pub` but take types no external caller can name. Nothing in the SDK tree
-  calls them either — not the wasm bindings, not uniffi, not upstream `bw`.
+  calls them either — not the wasm bindings, not uniffi, not `crates/bw`.
 - **Our fix:** use the generated `CiphersApi`/`FoldersApi` clients underneath
   instead, plus an explicit state-repository write (which the high-level client
   would have done for us). Same transport, auth and retry; only the bookkeeping
   is ours. **Worked around** (`vault/write_service.rs`).
-- **Proposed upstream fix:** export the three request types, and add
+- **Proposed SDK fix:** export the three request types, and add
   `FoldersClient::delete`.
-- **Status:** Open upstream.
+- **Status:** Open in the SDK.
 
 #### S3. `PartialCipher::merge_with_cipher` is `pub(crate)`, and `Cipher` has no `TryFrom<CipherResponseModel>`
 - **Command:** `bw create item`, `bw edit item`
@@ -147,9 +167,9 @@ found in a single afternoon of live testing after C12 made errors legible.
   public `TryFrom`. Written as an exhaustive destructure specifically so the
   compiler flags it if that stops being true. **Worked around**
   (`vault/write_service.rs::cipher_from_response`).
-- **Proposed upstream fix:** make `PartialCipher` public, or restore
+- **Proposed SDK fix:** make `PartialCipher` public, or restore
   `TryFrom<CipherResponseModel> for Cipher`.
-- **Status:** Open upstream.
+- **Status:** Open in the SDK.
 
 #### S4. `CipherResponseModel` omits `collectionIds`, so a naive edit unshares the item
 - **Command:** `bw edit item` on an organization item
@@ -158,13 +178,13 @@ found in a single afternoon of live testing after C12 made errors legible.
   response as-is drops the item's collection membership from local state, so it
   looks unshared until the next full sync — and any subsequent write persists the
   loss.
-- **Found by:** upstream's own `cipher_client/edit.rs:573` has a test whose
+- **Found by:** the SDK's own `cipher_client/edit.rs:573` has a test whose
   comment says `collection_ids must be preserved even though CipherResponseModel
   omits them` — which is what flagged the trap before we hit it.
 - **Our fix:** carry the collection ids we sent forward into the stored cipher.
   **Worked around** (`vault/write_service.rs::update_cipher`).
 - **Status:** arguably by design in the API; the hazard is that the type system
-  doesn't signal it. Worth a doc comment upstream at minimum.
+  doesn't signal it. Worth a doc comment in the SDK at minimum.
 
 #### S5. `get_sdk_managed_migrations` omits `LocalUserDataKeyState`
 - **Command:** every `bw unlock` (and any command that initializes crypto)
@@ -177,8 +197,8 @@ found in a single afternoon of live testing after C12 made errors legible.
 - **Our fix:** our own migration list adds `Add(LocalUserDataKeyState::data())`,
   keeping the shared entries in the same order so the two stay compatible.
   **Worked around** (`services/sdk.rs::state_migrations`).
-- **Proposed upstream fix:** add it to the list.
-- **Status:** Open upstream.
+- **Proposed SDK fix:** add it to the list.
+- **Status:** Open in the SDK.
 
 #### S6. `export_organization_vault` is `todo!()` and aborts the process
 - **Command:** `bw export --organizationid <id>`
@@ -188,7 +208,7 @@ found in a single afternoon of live testing after C12 made errors legible.
 - **Our fix:** refuse `--organizationid` up front on both `export` and `import`
   with a clear message, so the panic is unreachable. **Worked around**
   (`commands/`).
-- **Status:** Open upstream.
+- **Status:** Open in the SDK.
 
 #### S7. `CipherPermissions` is `deny_unknown_fields` and rejects real server data
 - **Command:** anything reading a TypeScript-CLI-written `data.json`
@@ -203,7 +223,7 @@ found in a single afternoon of live testing after C12 made errors legible.
   had.
 - **Our fix:** none needed after going SDK-native — we no longer read TS vault
   data. **Won't fix** locally.
-- **Proposed upstream fix:** drop `deny_unknown_fields`, or add the field.
+- **Proposed SDK fix:** drop `deny_unknown_fields`, or add the field.
   `deny_unknown_fields` on types that parse server or foreign-client data is a
   recurring source of these (see also C4).
 
@@ -309,7 +329,7 @@ found in a single afternoon of live testing after C12 made errors legible.
 - **Fix:** `move` is now org-share, implemented on the SDK's public
   `CiphersClient::share_cipher` — which reassigns the item, carries password
   history across, re-encrypts under the organization key, `PUT`s, and updates the
-  repository. `share` is accepted as an alias, as upstream does. Our folder move
+  repository. `share` is accepted as an alias, as the TypeScript CLI does. Our folder move
   became `bw move-to-folder <id> [folderId]`, which is not a TypeScript CLI
   command and says so in its help. **Fixed.**
 - **Prerequisite that was missing:** sharing re-encrypts under the organization's
@@ -654,7 +674,7 @@ found in a single afternoon of live testing after C12 made errors legible.
   domain type whose server-owned fields (`creationDate`, `revisionDate`, `edit`,
   `viewPassword`, `organizationUseTotp`) are required.
 - **Fix:** a lenient `CipherInput` DTO that defaults everything and fills
-  server-owned fields — the shape upstream already uses for sends
+  server-owned fields — the shape `crates/bw` already uses for sends
   (`SendJsonInput`). **Fixed**, guarded by `test_item_templates_are_parseable`,
   which round-trips every template. Not a 3.0 regression; broken at 2.0.0 too.
 

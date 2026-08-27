@@ -68,7 +68,7 @@ impl ExportService {
         data: ExportData,
         options: ExportOptions,
     ) -> Result<ExportResult, ExportError> {
-        // The SDK's organization export is unimplemented upstream and panics
+        // The SDK's organization export is unimplemented and panics
         // (`export_organization_vault` is a `todo!()`), so refuse rather than
         // abort the process.
         if options.organization_id.is_some() {

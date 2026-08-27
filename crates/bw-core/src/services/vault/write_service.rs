@@ -10,7 +10,7 @@
 //! request types (`CipherCreateRequest`, `CipherEditRequest`,
 //! `FolderAddEditRequest`) that `bitwarden-vault` does not export — the
 //! `cipher_client` module is `pub(crate)`. Nothing outside the crate calls them,
-//! including the wasm bindings, uniffi and upstream `bw`. `FoldersClient` has no
+//! including the wasm bindings, uniffi and `crates/bw`. `FoldersClient` has no
 //! `delete` at all. So:
 //!
 //! - **`CiphersClient`**: delete / soft-delete / restore / move. These take only
