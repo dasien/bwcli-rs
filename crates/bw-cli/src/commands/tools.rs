@@ -1,7 +1,7 @@
 use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::vault::{create_vault_service, create_write_service};
-use crate::output::{CommandResult, Response};
+use crate::output::{CommandOutput, CommandResult};
 use clap::Args;
 
 #[derive(Args)]
@@ -141,11 +141,11 @@ pub async fn execute_generate(
         })?;
 
         if global_args.response {
-            Ok(Response::success_json(serde_json::json!({
+            Ok(CommandOutput::success_json(serde_json::json!({
                 "data": result
             })))
         } else {
-            Ok(Response::success_raw(result))
+            Ok(CommandOutput::success_raw(result))
         }
     } else {
         // Generate password using SDK
@@ -190,11 +190,11 @@ pub async fn execute_generate(
         })?;
 
         if global_args.response {
-            Ok(Response::success_json(serde_json::json!({
+            Ok(CommandOutput::success_json(serde_json::json!({
                 "data": result
             })))
         } else {
-            Ok(Response::success_raw(result))
+            Ok(CommandOutput::success_raw(result))
         }
     }
 }
@@ -221,11 +221,11 @@ pub async fn execute_encode(
     let encoded = general_purpose::STANDARD.encode(&data);
 
     if global_args.response {
-        Ok(Response::success_json(serde_json::json!({
+        Ok(CommandOutput::success_json(serde_json::json!({
             "data": encoded
         })))
     } else {
-        Ok(Response::success_raw(encoded))
+        Ok(CommandOutput::success_raw(encoded))
     }
 }
 
@@ -315,14 +315,14 @@ pub async fn execute_import(
     }
 
     if global_args.response {
-        Ok(Response::success(serde_json::json!({
+        Ok(CommandOutput::success(serde_json::json!({
             "format": cmd.format,
             "itemsCreated": items_created,
             "foldersCreated": folders_created,
             "failed": failures.len(),
         })))
     } else {
-        Ok(Response::success_raw(format!(
+        Ok(CommandOutput::success_raw(format!(
             "Imported {items_created} item(s) and {folders_created} folder(s)."
         )))
     }
@@ -372,7 +372,7 @@ pub async fn execute_export(
     // With `--response` the JSON is the payload, so the document belongs inside
     // it. Writing it separately as well would put two documents on stdout.
     if global_args.response {
-        return Ok(Response::success(serde_json::json!({
+        return Ok(CommandOutput::success(serde_json::json!({
             "format": result.format,
             "itemCount": result.item_count,
             "encrypted": result.encrypted,
@@ -387,18 +387,18 @@ pub async fn execute_export(
         // stderr — otherwise `bw export --format json > vault.json` writes a
         // file no JSON parser will accept.
         (Some(contents), _) => {
-            use std::io::Write;
-            std::io::stdout().write_all(contents.as_bytes())?;
-            std::io::stdout().flush()?;
+            // The count is progress information, and progress goes to stderr —
+            // otherwise `bw export --format json > vault.json` writes a file no
+            // JSON parser will accept. The renderer writes the document itself.
             eprintln!("Exported {} item(s)", result.item_count);
-            Ok(Response::silent())
+            Ok(CommandOutput::bytes(contents.into_bytes()))
         }
         // Exported to a file: stdout carries no payload, so say what happened.
-        (None, Some(path)) => Ok(Response::success_raw(format!(
+        (None, Some(path)) => Ok(CommandOutput::success_raw(format!(
             "Saved {} item(s) to {}",
             result.item_count, path
         ))),
-        (None, None) => Ok(Response::success_raw(format!(
+        (None, None) => Ok(CommandOutput::success_raw(format!(
             "Exported {} item(s)",
             result.item_count
         ))),

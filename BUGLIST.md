@@ -67,13 +67,16 @@ left alone.
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 | S9 | Attachment upload machinery is private; the generated endpoint sends no body | Worked around |
 
-**bwcli-rs** — 2 open, 33 fixed.
+**bwcli-rs** — 4 open, 34 fixed.
 
 | | Bug | Status |
 |---|---|---|
 | C27 | `bw get template` needs an unlocked vault | **Open** |
 | C30 | No local premium pre-check on attachment commands | **Open** |
+| C36 | Default output is pretty JSON; the TypeScript CLI is compact | **Open** |
+| C37 | `bw export` item order is non-deterministic | **Open** |
 | C31 | Every failing command exited 0 | Fixed |
+| C35 | `--raw` emitted a trailing blank line on `get username|password|uri` | Fixed |
 | C34 | `--output` reported a relative path for some forms | Fixed |
 | C32 | `--response` printed nothing when the vault was locked | Fixed |
 | C33 | Errors were prefixed `Error:`, unlike the TypeScript CLI | Fixed |
@@ -301,7 +304,61 @@ found in a single afternoon of live testing after C12 made errors legible.
   the message is worse. Nothing succeeds that should not.
 - **Status:** **Open.**
 
+#### C36. Default output is pretty-printed JSON; the TypeScript CLI is compact
+- **Command:** every command returning structured data, e.g. `bw get item <id>`
+- **Location:** `bw-cli/src/output/formatter.rs`
+- **What happens:** we pretty-print objects by default and print compact under
+  `--raw`. The TypeScript CLI does neither: `base-program.ts`'s `getJson`
+  switches on **`BW_PRETTY` only**, so its default is *compact* and `--raw` has
+  no effect on JSON formatting at all. Its own `--pretty` help says "JSON is
+  tabbed with two spaces", implying the default is not.
+- **What `--raw` actually does in the TypeScript CLI:** exactly two things —
+  return `MessageResponse.raw` instead of the prose (`base-program.ts:87`), and
+  send a payload to stdout instead of a file (`utils.ts:154`). Nothing else.
+- **Why open rather than fixed:** changing the default output format of every
+  object-returning command is a user-visible behaviour change, not a refactor. It
+  was found *during* Phase 2 and deliberately not bundled into it. Worth an
+  explicit decision: full parity argues for compact-by-default.
+- **Status:** **Open.**
+
+#### C37. `bw export` item order is non-deterministic
+- **Command:** `bw export --format json`
+- **Location:** `bw-core/src/services/vault/mod.rs` — ciphers come from a
+  `HashMap`, whose iteration order is not stable
+- **What happens:** two consecutive exports of an unchanged vault emit items in
+  different orders. Verified: three consecutive runs of the same binary produced
+  two different first-item ids.
+- **Why it matters:** an export cannot be diffed against a previous one or
+  checksummed to detect drift, both ordinary things to do with a backup. It also
+  makes export useless as a comparison artifact between two CLIs.
+- **Fix:** sort by id before serializing.
+- **Found by:** a differential export comparison that reported a difference with
+  *identical byte counts* — which prompted checking the same binary against
+  itself.
+- **Status:** **Open.**
+
 ### Fixed
+
+#### C35. `--raw` emitted a trailing blank line
+- **Command:** `bw get username|password|uri|totp|template <id> --raw`
+- **Location:** `bw-cli/src/commands/vault.rs` — the per-command `--raw` branches
+- **What happened:** each of these hand-rolled its raw output: it `println!`ed
+  the value, then returned `success_message("")` — and the renderer printed the
+  empty message too. So `--raw` emitted `value\n\n` where human mode emitted
+  `value\n`.
+- **Why it went unnoticed:** `$(bw get password x)` strips trailing newlines, so
+  the common usage hid it entirely. It shows up in
+  `bw get username x --raw > file` (a blank line in the file) and
+  `bw get username x --raw | wc -l` (2, not 1).
+- **The branch was redundant anyway.** `CommandOutput::Plain` prints bare in
+  *both* human and raw mode, so deleting all four branches fixes the bug and
+  removes the duplication that caused it. Same root cause as C26 and C28: the
+  decision about how to render lived in the commands.
+- **Fix:** branches deleted; the renderer is the only thing that prints.
+  **Fixed.**
+- **Found by:** surveying command-level I/O for Phase 2 of
+  `docs/cli-architecture-adoption.md`, then checking exact bytes with `od -c`
+  instead of through `$(...)`.
 
 #### C31. Every failing command exited 0
 - **Command:** all of them — found on `bw create attachment`, reproduced on

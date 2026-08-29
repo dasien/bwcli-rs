@@ -1,7 +1,7 @@
 use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::auth::{LockCommand, LogoutCommand, UnlockCommand, input};
-use crate::output::{CommandResult, Response};
+use crate::output::{CommandOutput, CommandResult};
 use anyhow::Result;
 use bw_core::services::auth::AuthService;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ pub async fn execute_unlock(
     // `--raw` prints only the session key, matching the TypeScript CLI (whose
     // help says so outright) and making `export BW_SESSION=$(bw unlock --raw)`
     // work. Without it, `--raw` emitted the entire instructional blurb.
-    Ok(Response::success(format!(
+    Ok(CommandOutput::success(format!(
         "Your vault is unlocked!\n\n\
          To use your vault, set your session key to the BW_SESSION environment variable. ex:\n\
          $ export BW_SESSION=\"{}\"\n\
@@ -47,7 +47,7 @@ pub async fn execute_lock(
     // Execute lock
     auth_service.lock().await?;
 
-    Ok(Response::success("Your vault is locked."))
+    Ok(CommandOutput::success("Your vault is locked."))
 }
 
 /// Execute logout
@@ -62,5 +62,5 @@ pub async fn execute_logout(
     // Execute logout
     auth_service.logout().await?;
 
-    Ok(Response::success("You have been logged out."))
+    Ok(CommandOutput::success("You have been logged out."))
 }

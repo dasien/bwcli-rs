@@ -1,6 +1,6 @@
 use crate::AppContext;
 use crate::GlobalArgs;
-use crate::output::{CommandResult, Response};
+use crate::output::{CommandOutput, CommandResult};
 use clap::{Args, Subcommand};
 
 #[derive(Args)]

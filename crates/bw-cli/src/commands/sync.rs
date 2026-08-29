@@ -1,6 +1,6 @@
 use crate::AppContext;
 use crate::GlobalArgs;
-use crate::output::{CommandResult, Response};
+use crate::output::{CommandOutput, CommandResult};
 use bw_core::services::storage::AccountManager;
 use bw_core::services::vault::VaultService;
 use clap::Args;
@@ -35,13 +35,13 @@ pub async fn execute_sync(
     // Handle --last flag
     if cmd.last {
         match vault_service.get_last_sync().await? {
-            Some(timestamp) => Ok(Response::success_message(timestamp)),
+            Some(timestamp) => Ok(CommandOutput::success_message(timestamp)),
             None => Err(anyhow::Error::msg("Never synced")),
         }
     } else {
         // Perform sync
         match vault_service.sync(cmd.force).await {
-            Ok(timestamp) => Ok(Response::success_message(format!(
+            Ok(timestamp) => Ok(CommandOutput::success_message(format!(
                 "Syncing complete. Last sync: {}",
                 timestamp
             ))),

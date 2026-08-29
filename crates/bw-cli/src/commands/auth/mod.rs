@@ -4,7 +4,7 @@ mod prompts;
 mod vault_ops;
 
 use crate::GlobalArgs;
-use crate::output::{CommandResult, Response};
+use crate::output::{CommandOutput, CommandResult};
 use clap::{Args, Subcommand};
 
 // Re-export command implementations

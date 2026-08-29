@@ -1,6 +1,6 @@
 use crate::AppContext;
 use crate::GlobalArgs;
-use crate::output::{CommandResult, Response};
+use crate::output::{CommandOutput, CommandResult};
 use bw_core::services::sdk_session;
 use bw_core::services::storage::AccountManager;
 use bw_core::services::vault::VaultService;
@@ -97,5 +97,5 @@ pub async fn execute_status(
         status,
     };
 
-    Ok(Response::success(status_data))
+    Ok(CommandOutput::success(status_data))
 }

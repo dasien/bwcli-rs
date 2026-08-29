@@ -1,30 +1,83 @@
-use super::Response;
+use super::CommandOutput;
 use crate::GlobalArgs;
 use serde_json::{Value, json};
+use std::io::Write;
 
-/// Print a successful response according to `--response`, `--pretty`,
-/// `--quiet` and `--raw`.
-pub fn print_response(response: Response, args: &GlobalArgs) {
+/// Print a command's output. The only place a success payload reaches stdout.
+pub fn print_output(output: CommandOutput, args: &GlobalArgs) {
     if args.quiet {
         return;
     }
 
+    // Bytes are the payload itself, so they bypass formatting entirely — there
+    // is no meaningful JSON wrapping of an arbitrary binary file. `--response`
+    // together with `--raw` on an attachment is contradictory; the bytes win,
+    // because that is what the caller redirected stdout for.
+    if let CommandOutput::Bytes(data) = &output {
+        let mut stdout = std::io::stdout();
+        let _ = stdout.write_all(data);
+        let _ = stdout.flush();
+        return;
+    }
+
     if args.response {
-        print_json(&response, args.pretty);
+        print_wire_document(&output, args.pretty);
         return;
     }
 
-    // A payload already went to stdout; adding to it would corrupt it.
-    if response.silent {
-        return;
-    }
+    match output {
+        // Bare in both modes. A string payload is never JSON-encoded: it is the
+        // difference between `bw get password x` yielding `hunter2` and yielding
+        // `"hunter2"` — quotes and all — inside `$(...)`. See BUGLIST C26.
+        CommandOutput::Plain(text) => println!("{}", text),
 
-    if args.raw {
-        print_raw(&response);
-        return;
-    }
+        CommandOutput::Message { human, raw } => {
+            // An explicit raw form wins: `--raw` is for machine consumption, and
+            // the human text may be prose wrapped around the value (C28).
+            if args.raw {
+                println!("{}", raw.unwrap_or(human));
+            } else {
+                println!("{}", human);
+            }
+        }
 
-    print_human(&response);
+        CommandOutput::Object(value) => {
+            if args.raw {
+                print_raw_value(&value);
+            } else {
+                match serde_json::to_string_pretty(&value) {
+                    Ok(json) => println!("{}", json),
+                    Err(e) => eprintln!("Error formatting response: {}", e),
+                }
+            }
+        }
+
+        CommandOutput::Bytes(_) => unreachable!("handled above"),
+    }
+}
+
+/// Build the `--response` document.
+///
+/// Shape matches the TypeScript CLI's `Response`: `success` plus at most one of
+/// `data` / `message`. Constructing it here rather than in each command is what
+/// stops the wire format drifting between commands.
+fn print_wire_document(output: &CommandOutput, pretty: bool) {
+    let document = match output {
+        CommandOutput::Plain(text) => json!({ "success": true, "data": text }),
+        CommandOutput::Object(value) => json!({ "success": true, "data": value }),
+        CommandOutput::Message { human, .. } => json!({ "success": true, "message": human }),
+        CommandOutput::Bytes(_) => json!({ "success": true }),
+    };
+
+    let rendered = if pretty {
+        serde_json::to_string_pretty(&document)
+    } else {
+        serde_json::to_string(&document)
+    };
+    match rendered {
+        Ok(json) => println!("{}", json),
+        Err(e) => eprintln!("Error formatting response: {}", e),
+    }
 }
 
 /// Print a command failure.
@@ -41,9 +94,8 @@ pub fn print_response(response: Response, args: &GlobalArgs) {
 /// - otherwise the **bare message** goes to stderr
 ///
 /// That last case is deliberately not prefixed with `Error:`. The TypeScript CLI
-/// emits `chalk.redBright(response.message)` and nothing more, so no existing
-/// script can be relying on a prefix — printing one is a parity divergence, not
-/// a courtesy.
+/// emits `chalk.redBright(response.message)` and nothing more, so printing a
+/// prefix is a parity divergence, not a courtesy (`BUGLIST.md` C33).
 pub fn print_error(error: &anyhow::Error, args: &GlobalArgs) {
     if args.quiet {
         return;
@@ -70,30 +122,6 @@ pub fn print_error(error: &anyhow::Error, args: &GlobalArgs) {
     eprintln!("{}", message);
 }
 
-fn print_json(response: &Response, pretty: bool) {
-    let rendered = if pretty {
-        serde_json::to_string_pretty(response)
-    } else {
-        serde_json::to_string(response)
-    };
-    match rendered {
-        Ok(json) => println!("{}", json),
-        Err(e) => eprintln!("Error formatting response: {}", e),
-    }
-}
-
-fn print_raw(response: &Response) {
-    // An explicit raw form wins: `--raw` is for machine consumption, and the
-    // human payload may be prose wrapped around the value.
-    if let Some(raw) = &response.raw {
-        println!("{}", raw);
-    } else if let Some(data) = &response.data {
-        print_raw_value(data);
-    } else if let Some(msg) = &response.message {
-        println!("{}", msg);
-    }
-}
-
 fn print_raw_value(value: &Value) {
     match value {
         Value::String(s) => println!("{}", s),
@@ -111,29 +139,5 @@ fn print_raw_value(value: &Value) {
                 println!("{}", json);
             }
         }
-    }
-}
-
-fn print_human(response: &Response) {
-    if let Some(data) = &response.data {
-        match data {
-            // A string payload is printed bare, never JSON-encoded. This is what
-            // the TypeScript CLI does (`base-program.ts`: for a `string`
-            // response, `out = data`), and it is the difference between
-            // `bw get password <id>` yielding `hunter2` and yielding
-            // `"hunter2"` — quotes and all — inside `$(...)`. It is also what
-            // makes `bw encode | bw move` work.
-            Value::String(text) => println!("{}", text),
-            // Everything else is a document, and pretty-printing it is the point
-            // of human mode.
-            other => match serde_json::to_string_pretty(other) {
-                Ok(json) => println!("{}", json),
-                Err(e) => eprintln!("Error formatting response: {}", e),
-            },
-        }
-    } else if let Some(msg) = &response.message {
-        println!("{}", msg);
-    } else {
-        println!("Success");
     }
 }

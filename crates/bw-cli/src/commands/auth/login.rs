@@ -1,7 +1,7 @@
 use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::auth::{LoginApiKeyCommand, LoginPasswordCommand, input, prompts};
-use crate::output::{CommandResult, Response};
+use crate::output::{CommandOutput, CommandResult};
 use anyhow::Result;
 use bw_core::models::auth::TwoFactorMethod;
 use bw_core::services::auth::{AuthError, AuthService};
@@ -39,7 +39,7 @@ pub async fn execute_password_login(
     match result {
         Ok(login_result) => {
             // Format output with session key
-            Ok(Response::success(format!(
+            Ok(CommandOutput::success(format!(
                 "You are logged in!\n\n\
                  To unlock your vault, set your session key to the BW_SESSION environment variable. ex:\n\
                  $ export BW_SESSION=\"{}\"\n\
@@ -67,7 +67,7 @@ pub async fn execute_password_login(
                 .login_with_password(&email, password, two_factor, Some(otp))
                 .await?;
 
-            Ok(Response::success(format!(
+            Ok(CommandOutput::success(format!(
                 "You are logged in!\n\n\
                  To unlock your vault, set your session key to the BW_SESSION environment variable. ex:\n\
                  $ export BW_SESSION=\"{}\"\n\
@@ -112,7 +112,7 @@ pub async fn execute_api_key_login(
 
     // API-key login returns no user key, so there is no session to hand out.
     // Printing an empty `export BW_SESSION=""` would be actively misleading.
-    Ok(Response::success(
+    Ok(CommandOutput::success(
         "You are logged in!\n\n\
          Your vault is still locked. Run 'bw unlock' to get a session key."
             .to_string(),

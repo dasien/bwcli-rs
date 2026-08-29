@@ -1,7 +1,7 @@
 use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::input::get_json_string;
-use crate::output::{CommandResult, Response};
+use crate::output::{CommandOutput, CommandResult};
 use bitwarden_send::{
     AuthEdit, SendAddRequest, SendAuthType, SendClientExt, SendEditRequest, SendId, SendTextView,
     SendView, SendViewType,
@@ -153,9 +153,9 @@ fn require_session(global_args: &GlobalArgs) -> anyhow::Result<()> {
 fn send_response(global_args: &GlobalArgs, view: &SendView) -> CommandResult {
     let value = serde_json::to_value(view)?;
     if global_args.response {
-        Ok(Response::success(value))
+        Ok(CommandOutput::success(value))
     } else {
-        Ok(Response::success(value))
+        Ok(CommandOutput::success(value))
     }
 }
 
@@ -171,7 +171,7 @@ pub async fn execute_send(
         List(_) => {
             require_session(global_args)?;
             let sends = ctx.sdk().sends().list().await?;
-            Ok(Response::success(serde_json::to_value(sends)?))
+            Ok(CommandOutput::success(serde_json::to_value(sends)?))
         }
         Get(cmd) => {
             require_session(global_args)?;
@@ -194,7 +194,7 @@ pub async fn execute_send(
             let id = SendId::from_str(&cmd.id)
                 .map_err(|_| anyhow::anyhow!("'{}' is not a valid Send id", cmd.id))?;
             ctx.sdk().sends().delete(id).await?;
-            Ok(Response::success_raw("Send deleted."))
+            Ok(CommandOutput::success_raw("Send deleted."))
         }
     }
 }
@@ -356,5 +356,5 @@ fn execute_send_template(cmd: SendTemplateCommand) -> CommandResult {
         }
     };
 
-    Ok(Response::success(template))
+    Ok(CommandOutput::success(template))
 }

@@ -1,6 +1,6 @@
 use crate::AppContext;
 use crate::GlobalArgs;
-use crate::output::{CommandResult, Response};
+use crate::output::{CommandOutput, CommandResult};
 use bitwarden_auth::AuthClientExt;
 use bitwarden_auth::send_access::{
     SendAccessCredentials, SendAccessTokenRequest, SendPasswordCredentials,
@@ -96,7 +96,7 @@ pub async fn execute_receive(
         );
     }
 
-    Ok(Response::success(serde_json::to_value(view)?))
+    Ok(CommandOutput::success(serde_json::to_value(view)?))
 }
 
 #[cfg(test)]

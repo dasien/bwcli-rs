@@ -2,7 +2,7 @@ use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::input::{parse_folder_input, parse_item_input};
 use crate::commands::templates::get_item_template;
-use crate::output::{CommandResult, Response};
+use crate::output::{CommandOutput, CommandResult};
 use bw_core::models::vault::CipherView;
 use bw_core::services::storage::AccountManager;
 use bw_core::services::vault::{
@@ -432,12 +432,10 @@ fn save_attachment(
     default_file_name: &str,
     raw: bool,
 ) -> CommandResult {
-    use std::io::Write;
-
+    // The renderer writes the bytes; this only decides *where* the payload goes.
+    // Commands do not touch stdout.
     if raw && output.is_none_or(str::is_empty) {
-        std::io::stdout().write_all(contents)?;
-        std::io::stdout().flush()?;
-        return Ok(Response::silent());
+        return Ok(CommandOutput::bytes(contents.to_vec()));
     }
 
     let path = attachment_output_path(output, default_file_name);
@@ -454,7 +452,7 @@ fn save_attachment(
     set_mode(&path, 0o600);
 
     let path = path.display().to_string();
-    Ok(Response::success_message(format!("Saved {path}")).with_raw(path))
+    Ok(CommandOutput::success_message(format!("Saved {path}")).with_raw(path))
 }
 
 /// Resolve `--output` into a concrete path. See [`save_attachment`].
@@ -586,7 +584,7 @@ pub async fn execute_list(
             };
 
             match vault_service.list_items(&filters, session).await {
-                Ok(items) => Ok(Response::success(items)),
+                Ok(items) => Ok(CommandOutput::success(items)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
@@ -597,7 +595,7 @@ pub async fn execute_list(
                 .list_folders(folder_cmd.search.as_deref(), session)
                 .await
             {
-                Ok(folders) => Ok(Response::success(folders)),
+                Ok(folders) => Ok(CommandOutput::success(folders)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
@@ -612,13 +610,13 @@ pub async fn execute_list(
                 )
                 .await
             {
-                Ok(collections) => Ok(Response::success(collections)),
+                Ok(collections) => Ok(CommandOutput::success(collections)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
         ListCommands::Organizations(_) => match vault_service.list_organizations().await {
-            Ok(orgs) => Ok(Response::success(orgs)),
+            Ok(orgs) => Ok(CommandOutput::success(orgs)),
             Err(e) => Err(anyhow::Error::msg(e.to_string())),
         },
 
@@ -640,7 +638,7 @@ pub async fn execute_get(
         GetCommands::Item(item_cmd) => {
             let session = get_session(global_args)?;
             match vault_service.get_item(&item_cmd.id, session).await {
-                Ok(item) => Ok(Response::success(item)),
+                Ok(item) => Ok(CommandOutput::success(item)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
@@ -651,14 +649,11 @@ pub async fn execute_get(
                 .get_field(&username_cmd.id, FieldType::Username, session)
                 .await
             {
-                Ok(username) => {
-                    if global_args.raw {
-                        println!("{}", username);
-                        Ok(Response::success_message(""))
-                    } else {
-                        Ok(Response::success(username))
-                    }
-                }
+                // No `--raw` branch: `CommandOutput::Plain` already prints bare in
+                // both modes. The hand-rolled branch that used to live here
+                // printed the value *and* returned an empty message, so `--raw`
+                // emitted a trailing blank line (`BUGLIST.md` C35).
+                Ok(username) => Ok(CommandOutput::success(username)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
@@ -669,14 +664,11 @@ pub async fn execute_get(
                 .get_field(&password_cmd.id, FieldType::Password, session)
                 .await
             {
-                Ok(password) => {
-                    if global_args.raw {
-                        println!("{}", password);
-                        Ok(Response::success_message(""))
-                    } else {
-                        Ok(Response::success(password))
-                    }
-                }
+                // No `--raw` branch: `CommandOutput::Plain` already prints bare in
+                // both modes. The hand-rolled branch that used to live here
+                // printed the value *and* returned an empty message, so `--raw`
+                // emitted a trailing blank line (`BUGLIST.md` C35).
+                Ok(password) => Ok(CommandOutput::success(password)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
@@ -687,14 +679,11 @@ pub async fn execute_get(
                 .get_field(&uri_cmd.id, FieldType::Uri, session)
                 .await
             {
-                Ok(uri) => {
-                    if global_args.raw {
-                        println!("{}", uri);
-                        Ok(Response::success_message(""))
-                    } else {
-                        Ok(Response::success(uri))
-                    }
-                }
+                // No `--raw` branch: `CommandOutput::Plain` already prints bare in
+                // both modes. The hand-rolled branch that used to live here
+                // printed the value *and* returned an empty message, so `--raw`
+                // emitted a trailing blank line (`BUGLIST.md` C35).
+                Ok(uri) => Ok(CommandOutput::success(uri)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
@@ -702,37 +691,24 @@ pub async fn execute_get(
         GetCommands::Totp(totp_cmd) => {
             let session = get_session(global_args)?;
             match vault_service.get_totp(&totp_cmd.id, session).await {
-                Ok(code) => {
-                    if global_args.raw {
-                        println!("{}", code);
-                        Ok(Response::success_message(""))
-                    } else {
-                        Ok(Response::success(code))
-                    }
-                }
+                // No `--raw` branch: `CommandOutput::Plain` already prints bare in
+                // both modes. The hand-rolled branch that used to live here
+                // printed the value *and* returned an empty message, so `--raw`
+                // emitted a trailing blank line (`BUGLIST.md` C35).
+                Ok(code) => Ok(CommandOutput::success(code)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
 
-        GetCommands::Template(template_cmd) => {
-            match get_item_template(&template_cmd.template_type) {
-                Ok(template) => {
-                    if global_args.raw {
-                        // Raw output: pretty-printed JSON
-                        match serde_json::to_string_pretty(&template) {
-                            Ok(json) => {
-                                println!("{}", json);
-                                Ok(Response::success_message(""))
-                            }
-                            Err(e) => Err(anyhow::Error::msg(e.to_string())),
-                        }
-                    } else {
-                        Ok(Response::success(template))
-                    }
-                }
-                Err(e) => Err(anyhow::Error::msg(e.to_string())),
-            }
-        }
+        // Templates render like any other structured payload. The hand-rolled
+        // `--raw` branch that used to live here pretty-printed and then returned
+        // an empty message, which emitted a trailing blank line (`BUGLIST.md`
+        // C35) *and* made `get template --raw` pretty while `get item --raw` was
+        // compact. The TypeScript CLI prints templates compact unless
+        // `--pretty`, so dropping the branch also moves `--raw` toward parity.
+        GetCommands::Template(template_cmd) => get_item_template(&template_cmd.template_type)
+            .map(CommandOutput::success)
+            .map_err(|e| anyhow::Error::msg(e.to_string())),
 
         GetCommands::Folder(folder_cmd) => {
             let session = get_session(global_args)?;
@@ -743,7 +719,7 @@ pub async fn execute_get(
                     if let Some(folder) = folders.iter().find(|f| {
                         f.id.as_ref().map(|id| id.to_string()) == Some(folder_cmd.id.clone())
                     }) {
-                        Ok(Response::success(folder))
+                        Ok(CommandOutput::success(folder))
                     } else {
                         Err(anyhow::Error::msg(format!(
                             "Folder not found: {}",
@@ -800,7 +776,7 @@ pub async fn execute_create(
                     let vault_service = create_vault_service(ctx);
                     let id_str = created.id.map(|id| id.to_string()).unwrap_or_default();
                     match vault_service.get_item(&id_str, session).await {
-                        Ok(decrypted) => Ok(Response::success(decrypted)),
+                        Ok(decrypted) => Ok(CommandOutput::success(decrypted)),
                         Err(e) => Err(anyhow::Error::msg(e.to_string())),
                     }
                 }
@@ -829,7 +805,7 @@ pub async fn execute_create(
                     match vault_service.list_folders(None, session).await {
                         Ok(folders) => {
                             if let Some(folder) = folders.iter().find(|f| f.id == created.id) {
-                                Ok(Response::success(folder))
+                                Ok(CommandOutput::success(folder))
                             } else {
                                 Err(anyhow::Error::msg("Folder created but not found in cache"))
                             }
@@ -856,7 +832,7 @@ pub async fn execute_create(
                 .create(&attachment_cmd.itemid, &path)
                 .await
             {
-                Ok(item) => Ok(Response::success(item)),
+                Ok(item) => Ok(CommandOutput::success(item)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
@@ -911,7 +887,7 @@ pub async fn execute_edit(
                     // 5. Return decrypted view - updated.id is Option<CipherId>
                     let id_str = updated.id.map(|id| id.to_string()).unwrap_or_default();
                     match vault_service.get_item(&id_str, session).await {
-                        Ok(decrypted) => Ok(Response::success(decrypted)),
+                        Ok(decrypted) => Ok(CommandOutput::success(decrypted)),
                         Err(e) => Err(anyhow::Error::msg(e.to_string())),
                     }
                 }
@@ -943,7 +919,7 @@ pub async fn execute_edit(
                             if let Some(folder) = folders.iter().find(|f| {
                                 f.id.as_ref().map(|id| id.to_string()) == Some(folder_cmd.id.clone())
                             }) {
-                                Ok(Response::success(folder))
+                                Ok(CommandOutput::success(folder))
                             } else {
                                 Err(anyhow::Error::msg("Folder updated but not found in cache"))
                             }
@@ -985,10 +961,10 @@ pub async fn execute_delete(
                     } else {
                         "Item moved to trash"
                     };
-                    Ok(Response::success_message(msg))
+                    Ok(CommandOutput::success_message(msg))
                 }
                 Err(VaultError::OperationCancelled) => {
-                    Ok(Response::success_message("Deletion cancelled"))
+                    Ok(CommandOutput::success_message("Deletion cancelled"))
                 }
                 Err(VaultError::ItemNotFound) => {
                     Err(anyhow::Error::msg(format!("Item not found: {}", item_cmd.id)))
@@ -1001,7 +977,7 @@ pub async fn execute_delete(
             let write_service = create_write_service(ctx, global_args.nointeraction);
 
             match write_service.delete_folder(&folder_cmd.id).await {
-                Ok(_) => Ok(Response::success_message("Folder deleted")),
+                Ok(_) => Ok(CommandOutput::success_message("Folder deleted")),
                 Err(VaultError::FolderNotFound) => Err(anyhow::Error::msg(format!(
                     "Folder not found: {}",
                     folder_cmd.id
@@ -1017,7 +993,7 @@ pub async fn execute_delete(
                 .delete(&attachment_cmd.itemid, &attachment_cmd.id)
                 .await
             {
-                Ok(()) => Ok(Response::success_message("Attachment deleted.")),
+                Ok(()) => Ok(CommandOutput::success_message("Attachment deleted.")),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
@@ -1044,7 +1020,7 @@ pub async fn execute_restore(
             let vault_service = create_vault_service(ctx);
             let id_str = restored.id.map(|id| id.to_string()).unwrap_or_default();
             match vault_service.get_item(&id_str, session).await {
-                Ok(decrypted) => Ok(Response::success(decrypted)),
+                Ok(decrypted) => Ok(CommandOutput::success(decrypted)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }
@@ -1072,7 +1048,7 @@ pub async fn execute_move(
         .share_cipher(&cmd.id, &cmd.organization_id, collection_ids)
         .await
     {
-        Ok(shared) => Ok(Response::success(shared)),
+        Ok(shared) => Ok(CommandOutput::success(shared)),
         Err(VaultError::ItemNotFound) => {
             Err(anyhow::Error::msg(format!("Item not found: {}", cmd.id)))
         }
@@ -1196,7 +1172,7 @@ pub async fn execute_move_to_folder(
             // The bulk move endpoint returns no body, so read the item back.
             let vault_service = create_vault_service(ctx);
             match vault_service.get_item(&cmd.item_id, session).await {
-                Ok(decrypted) => Ok(Response::success(decrypted)),
+                Ok(decrypted) => Ok(CommandOutput::success(decrypted)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
             }
         }

@@ -80,7 +80,7 @@ and **C33** (errors prefixed `Error:`, which the TypeScript CLI never emits).
 
 ---
 
-## Phase 2 — `CommandOutput`: make the C26/C28 class unrepresentable
+## Phase 2 — `CommandOutput`: make the C26/C28 class unrepresentable — **DONE**
 
 **The defect this closes.** Commands do their own I/O today:
 
@@ -131,6 +131,37 @@ not adoption. `Object` leaves the door open if that changes.
 
 **Done when:** no `println!` outside `output/`, and `raw`/`silent` appear in the
 renderer only.
+
+**Outcome.** Both hold. `Response` (a struct of four independent `Option`s, most
+combinations meaningless) is now the `CommandOutput` enum; commands no longer
+call `println!` or touch stdout at all. `--raw`/`--silent` live only in the
+renderer, with one deliberate exception: `save_attachment` still reads `raw` to
+decide *file vs stdout*, which is destination rather than formatting and is
+exactly what `BW_RAW` controls in the TypeScript CLI (`utils.ts:154`).
+
+The survey found **C35** before a line was changed: all four hand-rolled `--raw`
+branches printed the value *and* returned an empty message, so `--raw` emitted a
+trailing blank line. `$(...)` strips trailing newlines, which is why nobody had
+noticed. The branches were redundant — `Plain` already prints bare in both modes
+— so deleting them fixed the bug and removed the duplication that caused it.
+
+Two divergences from the TypeScript CLI were found and **deliberately not fixed
+here**, because they are behaviour changes rather than refactoring: **C36** (we
+pretty-print by default; the TypeScript CLI is compact unless `--pretty`, and its
+`--raw` does not affect JSON at all) and **C37** (`bw export` item order is
+non-deterministic). Both are logged for an explicit decision.
+
+Verified by differential run against the post-Phase-1 binary: 16 of 17 command
+forms byte-identical, the one difference being `get template --raw` becoming
+compact — intended, and closer to the TypeScript CLI. Attachment and export
+`Bytes` paths re-verified live, including a 4 KiB binary round trip. 282 tests
+pass.
+
+**A limitation of that harness worth recording:** it captures output with
+`$(...)`, which strips trailing newlines — so it *cannot* detect C35-class bugs.
+C35 was confirmed with `od -c` and `wc -l` instead. A differential harness is
+only as good as its comparison; this one normalises exactly the whitespace that
+one real bug lived in.
 
 ---
 

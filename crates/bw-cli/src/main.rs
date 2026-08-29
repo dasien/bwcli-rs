@@ -188,7 +188,7 @@ async fn main() -> ExitCode {
     // `Ok`, so the exit code and the printed message could disagree.
     match result {
         Ok(response) => {
-            output::print_response(response, &cli.global_args);
+            output::print_output(response, &cli.global_args);
             ExitCode::SUCCESS
         }
         Err(e) => fail(&e, &cli.global_args),
@@ -217,7 +217,7 @@ async fn execute_command(
     command: Commands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
-) -> anyhow::Result<output::Response> {
+) -> output::CommandResult {
     use Commands::*;
 
     match command {
