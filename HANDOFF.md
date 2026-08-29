@@ -163,8 +163,8 @@ If tests fail before you have touched anything, suspect the SDK pin first.
 
 ### Disk, and why the dev profile looks the way it does
 
-`target/` was **28 GiB** before tuning and is ~2 GB now. Two causes, both handled
-in `Cargo.toml`, and both easy to undo by accident:
+`target/` reached **28 GiB** once. Two `Cargo.toml` settings cut the per-artifact
+cost and are easy to undo by accident:
 
 - `[profile.dev] debug = "line-tables-only"` and `[profile.dev.package."*"] debug = false`.
   Full DWARF is roughly a third of every artifact, and this workspace links the
@@ -176,7 +176,21 @@ in `Cargo.toml`, and both easy to undo by accident:
   second compilation of every crate above it. That alone roughly doubled `target/`.
   There is a comment saying so; leave it.
 
-`cargo clean` is the cure if it creeps back up.
+**Expect it to climb anyway.** Those settings reduce the size of each artifact;
+they do nothing about `incremental/` and `deps/` accumulating stale artifacts across
+many rebuilds. A day of build-and-test cycles took `target/` from ~2 GB to **12 GB**
+(6.8 G of it `debug/incremental`, 4.3 G `debug/deps`). That is normal, not a
+misconfiguration.
+
+```bash
+du -sh target      # check it occasionally
+cargo clean        # recovers all of it; costs one full rebuild
+```
+
+Worth knowing if disk gets tight: the irreplaceable part of this checkout is about
+**7 MB** (source plus `.git`), and it is all on GitHub. Everything else is
+regenerable, so `cargo clean` — or deleting the checkout entirely — loses nothing
+that is not pushed.
 
 ## 4. Local state, and the credentials in it
 
