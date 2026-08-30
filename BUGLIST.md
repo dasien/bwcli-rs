@@ -67,11 +67,11 @@ left alone.
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 | S9 | Attachment upload machinery is private; the generated endpoint sends no body | Worked around |
 
-**bwcli-rs** — 4 open, 34 fixed.
+**bwcli-rs** — 3 open, 35 fixed.
 
 | | Bug | Status |
 |---|---|---|
-| C27 | `bw get template` needs an unlocked vault | **Open** |
+| C27 | `bw get template` (and `bw send template`) needed an unlocked vault | Fixed |
 | C30 | No local premium pre-check on attachment commands | **Open** |
 | C36 | Default output is pretty JSON; the TypeScript CLI is compact | **Open** |
 | C37 | `bw export` item order is non-deterministic | **Open** |
@@ -272,38 +272,6 @@ found in a single afternoon of live testing after C12 made errors legible.
 
 ### Open
 
-#### C27. `bw get template` needs an unlocked vault
-- **Command:** `bw get template item`
-- **Location:** `bw-cli/src/main.rs` — `needs_unlocked_vault`
-- **What happens:** the whole `get` family is classified as needing an unlocked
-  vault, but templates are static JSON compiled into the binary. So
-  `bw get template item` fails with *"Vault is locked"* when it needs nothing from
-  the vault at all. The TypeScript CLI's `get template` requires no session.
-- **Found by:** writing a test that wanted a JSON document from a command needing
-  no credentials, and finding `get template` could not supply one.
-- **Proposed fix:** classify `Get(GetCommands::Template(_))` as not needing an
-  unlocked vault, alongside `receive`, which is already excluded for the same reason.
-- **Status:** **Open.** Cosmetic in effect — the workaround is to unlock — but it
-  makes `bw get template item | bw create item` need a session for the template
-  half, which is the pipeline C13 exists to protect.
-
-#### C30. No local premium pre-check on attachment commands
-- **Command:** `bw create attachment`, `bw get attachment`, `bw delete attachment`
-- **Location:** `bw-core/src/services/vault/attachment_service.rs`
-- **What happens:** attachments are a premium feature for personally-owned items.
-  The TypeScript CLI checks premium status locally first and fails with
-  *"Premium status is required to use this feature."*; organization-owned items
-  are exempt. We do not check, so the user gets whatever the server returns
-  instead of that sentence.
-- **Why it is not just an oversight:** there is nowhere honest to read the flag
-  from. `UserProfile::premium` exists in `bw-core/src/models/state/user.rs` but
-  **nothing ever writes it** — `sync` does not populate it. Checking it would
-  reject every premium user, which is worse than not checking. Making it real
-  means having `sync` persist the profile flag first.
-- **Effect:** the operation still fails correctly, and for the right reason; only
-  the message is worse. Nothing succeeds that should not.
-- **Status:** **Open.**
-
 #### C36. Default output is pretty-printed JSON; the TypeScript CLI is compact
 - **Command:** every command returning structured data, e.g. `bw get item <id>`
 - **Location:** `bw-cli/src/output/formatter.rs`
@@ -359,6 +327,35 @@ found in a single afternoon of live testing after C12 made errors legible.
 - **Found by:** surveying command-level I/O for Phase 2 of
   `docs/cli-architecture-adoption.md`, then checking exact bytes with `od -c`
   instead of through `$(...)`.
+
+#### C27. `bw get template` needed an unlocked vault
+- **Command:** `bw get template item` — and, discovered later, `bw send template text`
+- **Location:** `bw-cli/src/main.rs` — `needs_unlocked_vault`, now
+  `bw-cli/src/auth_gate.rs`
+- **What happened:** templates are static JSON compiled into the binary and read
+  nothing, but the requirement was declared per *top-level* command:
+  `Get(_) => true`. Every `get` subcommand inherited it, so
+  `bw get template item | bw create item` demanded a session for the half that
+  needs none — exactly the pipeline C13 exists to protect.
+- **Correction to the original entry:** it described this as affecting
+  `get template` only. The Phase 3 survey found `Send(_) => true` did the same to
+  `bw send template`, which nobody had reported. One root cause, two commands.
+- **Why the cheap fix was never taken:** special-casing
+  `Get(GetCommands::Template(_))` in the match makes it more intricate and no more
+  trustworthy — and would have left `send template` broken, since nothing pointed
+  at it.
+- **Fix:** a `Requires` trait implemented by the command types themselves and
+  **delegating** into subcommand enums, so a mixed case is expressible instead of
+  flattened. `GetCommands` and `SendCommands` declare their own, next to their
+  definitions. `needs_unlocked_vault` is gone. **Fixed**, with tests covering both
+  templates *and* their siblings still refusing.
+- **Second half of the fix:** commands that need crypto now receive an `Unlocked`
+  token that only `auth_gate::satisfy` can mint, and only after `unlock_sdk`
+  succeeds. Forgetting to check is no longer expressible, and the redundant
+  in-handler gates are gone: 20 `get_session` calls in `vault.rs`, plus a
+  *second, independent* `require_session` helper in `send.rs`. Two parallel
+  implementations of the same check had drifted into the codebase, which is
+  itself the argument for having exactly one.
 
 #### C31. Every failing command exited 0
 - **Command:** all of them — found on `bw create attachment`, reproduced on

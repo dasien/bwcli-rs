@@ -1,6 +1,7 @@
 use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::input::get_json_string;
+use crate::auth_gate::{Need, Requires, Unlocked, require};
 use crate::output::{CommandOutput, CommandResult};
 use bitwarden_send::{
     AuthEdit, SendAddRequest, SendAuthType, SendClientExt, SendEditRequest, SendId, SendTextView,
@@ -34,6 +35,18 @@ pub enum SendCommands {
 
     /// Delete Send
     Delete(SendDeleteCommand),
+}
+
+/// `send template` had C27's defect too, undetected: the old match said
+/// `Send(_) => true`, so a static template demanded a session. Same root cause,
+/// same fix — the requirement is declared per subcommand.
+impl Requires for SendCommands {
+    fn requires(&self) -> Need {
+        match self {
+            SendCommands::Template(_) => Need::Nothing,
+            _ => Need::UnlockedVault,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -143,13 +156,6 @@ fn parse_send_input(json: &str) -> anyhow::Result<SendJsonInput> {
     Ok(input)
 }
 
-fn require_session(global_args: &GlobalArgs) -> anyhow::Result<()> {
-    if global_args.session.as_deref().unwrap_or("").is_empty() {
-        anyhow::bail!("Vault is locked. Run 'bw unlock' and set BW_SESSION.");
-    }
-    Ok(())
-}
-
 fn send_response(global_args: &GlobalArgs, view: &SendView) -> CommandResult {
     let value = serde_json::to_value(view)?;
     if global_args.response {
@@ -163,18 +169,19 @@ pub async fn execute_send(
     cmd: SendCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: Option<&Unlocked<'_>>,
 ) -> CommandResult {
     use SendCommands::*;
 
     match cmd {
         Template(cmd) => execute_send_template(cmd),
         List(_) => {
-            require_session(global_args)?;
+            require(unlocked)?;
             let sends = ctx.sdk().sends().list().await?;
             Ok(CommandOutput::success(serde_json::to_value(sends)?))
         }
         Get(cmd) => {
-            require_session(global_args)?;
+            require(unlocked)?;
             let id = SendId::from_str(&cmd.id)
                 .map_err(|_| anyhow::anyhow!("'{}' is not a valid Send id", cmd.id))?;
             let view = ctx.sdk().sends().get(id).await?;
@@ -183,14 +190,14 @@ pub async fn execute_send(
         Create(cmd) => execute_send_create(cmd, global_args, ctx).await,
         Edit(cmd) => execute_send_edit(cmd, global_args, ctx).await,
         RemovePassword(cmd) => {
-            require_session(global_args)?;
+            require(unlocked)?;
             let id = SendId::from_str(&cmd.id)
                 .map_err(|_| anyhow::anyhow!("'{}' is not a valid Send id", cmd.id))?;
             let view = ctx.sdk().sends().remove_password(id).await?;
             send_response(global_args, &view)
         }
         Delete(cmd) => {
-            require_session(global_args)?;
+            require(unlocked)?;
             let id = SendId::from_str(&cmd.id)
                 .map_err(|_| anyhow::anyhow!("'{}' is not a valid Send id", cmd.id))?;
             ctx.sdk().sends().delete(id).await?;
@@ -204,7 +211,6 @@ async fn execute_send_create(
     global_args: &GlobalArgs,
     ctx: &AppContext,
 ) -> CommandResult {
-    require_session(global_args)?;
 
     let mut input = parse_send_input(&cmd.json)?;
 
@@ -264,7 +270,6 @@ async fn execute_send_edit(
     global_args: &GlobalArgs,
     ctx: &AppContext,
 ) -> CommandResult {
-    require_session(global_args)?;
 
     let id = SendId::from_str(&cmd.id)
         .map_err(|_| anyhow::anyhow!("'{}' is not a valid Send id", cmd.id))?;

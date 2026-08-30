@@ -1,5 +1,6 @@
 use crate::AppContext;
 use crate::GlobalArgs;
+use crate::auth_gate::Unlocked;
 use crate::output::{CommandOutput, CommandResult};
 use bw_core::services::storage::AccountManager;
 use bw_core::services::vault::VaultService;
@@ -21,6 +22,7 @@ pub async fn execute_sync(
     cmd: SyncCommand,
     _global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: &Unlocked<'_>,
 ) -> CommandResult {
     // Use services from context
     let account_manager = Arc::new(AccountManager::new(ctx.storage()));

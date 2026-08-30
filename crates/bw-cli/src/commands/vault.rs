@@ -2,6 +2,7 @@ use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::input::{parse_folder_input, parse_item_input};
 use crate::commands::templates::get_item_template;
+use crate::auth_gate::{Need, Requires, Unlocked, require};
 use crate::output::{CommandOutput, CommandResult};
 use bw_core::models::vault::CipherView;
 use bw_core::services::storage::AccountManager;
@@ -105,6 +106,24 @@ pub enum GetCommands {
     Template(GetTemplateCommand),
     /// Get account fingerprint
     Fingerprint(GetFingerprintCommand),
+}
+
+/// `get template` is the reason [`Requires`] delegates into subcommand enums.
+///
+/// Templates are static JSON compiled into the binary, so they need nothing at
+/// all — but the old per-top-level-command match said `Get(_) => true`, which
+/// made `bw get template item | bw create item` demand a session for the half
+/// that reads no vault data (`BUGLIST.md` C27).
+impl Requires for GetCommands {
+    fn requires(&self) -> Need {
+        match self {
+            GetCommands::Template(_) => Need::Nothing,
+            // Everything else reads or decrypts vault data. Listed as a
+            // catch-all deliberately: a new `get` subcommand should default to
+            // requiring an unlocked vault, and opt out explicitly above.
+            _ => Need::UnlockedVault,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -380,13 +399,6 @@ pub struct ConfirmCommand {
     pub organizationid: String,
 }
 
-/// Get the session key from global args, returning an error if not provided
-fn get_session(global_args: &GlobalArgs) -> anyhow::Result<&str> {
-    global_args.session.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("Vault is locked. Run 'bw unlock' and set BW_SESSION environment variable.")
-    })
-}
-
 // Helper to create vault service
 pub(crate) fn create_vault_service(ctx: &AppContext) -> VaultService {
     let account_manager = Arc::new(AccountManager::new(ctx.storage()));
@@ -568,12 +580,13 @@ pub async fn execute_list(
     cmd: ListCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: &Unlocked<'_>,
 ) -> CommandResult {
     let vault_service = create_vault_service(ctx);
 
     match cmd {
         ListCommands::Items(item_cmd) => {
-            let session = get_session(global_args)?;
+            let session = unlocked.session();
             let filters = ItemFilters {
                 organization_id: item_cmd.organizationid,
                 collection_id: item_cmd.collectionid,
@@ -590,7 +603,7 @@ pub async fn execute_list(
         }
 
         ListCommands::Folders(folder_cmd) => {
-            let session = get_session(global_args)?;
+            let session = unlocked.session();
             match vault_service
                 .list_folders(folder_cmd.search.as_deref(), session)
                 .await
@@ -601,7 +614,7 @@ pub async fn execute_list(
         }
 
         ListCommands::Collections(collection_cmd) => {
-            let session = get_session(global_args)?;
+            let session = unlocked.session();
             match vault_service
                 .list_collections(
                     collection_cmd.organizationid.as_deref(),
@@ -631,12 +644,13 @@ pub async fn execute_get(
     cmd: GetCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: Option<&Unlocked<'_>>,
 ) -> CommandResult {
     let vault_service = create_vault_service(ctx);
 
     match cmd {
         GetCommands::Item(item_cmd) => {
-            let session = get_session(global_args)?;
+            let session = require(unlocked)?.session();
             match vault_service.get_item(&item_cmd.id, session).await {
                 Ok(item) => Ok(CommandOutput::success(item)),
                 Err(e) => Err(anyhow::Error::msg(e.to_string())),
@@ -644,7 +658,7 @@ pub async fn execute_get(
         }
 
         GetCommands::Username(username_cmd) => {
-            let session = get_session(global_args)?;
+            let session = require(unlocked)?.session();
             match vault_service
                 .get_field(&username_cmd.id, FieldType::Username, session)
                 .await
@@ -659,7 +673,7 @@ pub async fn execute_get(
         }
 
         GetCommands::Password(password_cmd) => {
-            let session = get_session(global_args)?;
+            let session = require(unlocked)?.session();
             match vault_service
                 .get_field(&password_cmd.id, FieldType::Password, session)
                 .await
@@ -674,7 +688,7 @@ pub async fn execute_get(
         }
 
         GetCommands::Uri(uri_cmd) => {
-            let session = get_session(global_args)?;
+            let session = require(unlocked)?.session();
             match vault_service
                 .get_field(&uri_cmd.id, FieldType::Uri, session)
                 .await
@@ -689,7 +703,7 @@ pub async fn execute_get(
         }
 
         GetCommands::Totp(totp_cmd) => {
-            let session = get_session(global_args)?;
+            let session = require(unlocked)?.session();
             match vault_service.get_totp(&totp_cmd.id, session).await {
                 // No `--raw` branch: `CommandOutput::Plain` already prints bare in
                 // both modes. The hand-rolled branch that used to live here
@@ -711,7 +725,7 @@ pub async fn execute_get(
             .map_err(|e| anyhow::Error::msg(e.to_string())),
 
         GetCommands::Folder(folder_cmd) => {
-            let session = get_session(global_args)?;
+            let session = require(unlocked)?.session();
             let folders = vault_service.list_folders(None, session).await;
             match folders {
                 Ok(folders) => {
@@ -732,7 +746,6 @@ pub async fn execute_get(
         }
 
         GetCommands::Attachment(attachment_cmd) => {
-            let _session = get_session(global_args)?;
 
             match create_attachment_service(ctx)
                 .download(&attachment_cmd.itemid, &attachment_cmd.id)
@@ -757,10 +770,11 @@ pub async fn execute_create(
     cmd: CreateCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: &Unlocked<'_>,
 ) -> CommandResult {
     match cmd {
         CreateCommands::Item(item_cmd) => {
-            let session = get_session(global_args)?;
+            let session = unlocked.session();
 
             // 1. Parse input (base64/JSON/stdin)
             let cipher_view = match parse_item_input(&item_cmd.json) {
@@ -785,7 +799,7 @@ pub async fn execute_create(
         }
 
         CreateCommands::Folder(folder_cmd) => {
-            let session = get_session(global_args)?;
+            let session = unlocked.session();
 
             // 1. Parse folder input
             let folder_input = match parse_folder_input(&folder_cmd.json) {
@@ -818,7 +832,6 @@ pub async fn execute_create(
         }
 
         CreateCommands::Attachment(attachment_cmd) => {
-            let _session = get_session(global_args)?;
 
             let path = std::path::PathBuf::from(&attachment_cmd.file);
             if !path.is_file() {
@@ -848,10 +861,11 @@ pub async fn execute_edit(
     cmd: EditCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: &Unlocked<'_>,
 ) -> CommandResult {
     match cmd {
         EditCommands::Item(item_cmd) => {
-            let session = get_session(global_args)?;
+            let session = unlocked.session();
             let vault_service = create_vault_service(ctx);
 
             // 1. Get existing item
@@ -896,7 +910,7 @@ pub async fn execute_edit(
         }
 
         EditCommands::Folder(folder_cmd) => {
-            let session = get_session(global_args)?;
+            let session = unlocked.session();
 
             // 1. Parse folder input
             let folder_input = match parse_folder_input(&folder_cmd.json) {
@@ -942,10 +956,10 @@ pub async fn execute_delete(
     cmd: DeleteCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: &Unlocked<'_>,
 ) -> CommandResult {
     // Validate session early for consistent error messages
     // (even though delete operations don't need encryption)
-    let _session = get_session(global_args)?;
 
     match cmd {
         DeleteCommands::Item(item_cmd) => {
@@ -987,7 +1001,6 @@ pub async fn execute_delete(
         }
 
         DeleteCommands::Attachment(attachment_cmd) => {
-            let _session = get_session(global_args)?;
 
             match create_attachment_service(ctx)
                 .delete(&attachment_cmd.itemid, &attachment_cmd.id)
@@ -1009,9 +1022,10 @@ pub async fn execute_restore(
     cmd: RestoreCommands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: &Unlocked<'_>,
 ) -> CommandResult {
     let RestoreCommands::Item(cmd) = cmd;
-    let session = get_session(global_args)?;
+    let session = unlocked.session();
     let write_service = create_write_service(ctx, global_args.nointeraction);
 
     match write_service.restore_cipher(&cmd.id).await {
@@ -1035,8 +1049,8 @@ pub async fn execute_move(
     cmd: MoveCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: &Unlocked<'_>,
 ) -> CommandResult {
-    let _session = get_session(global_args)?;
     let write_service = create_write_service(ctx, global_args.nointeraction);
 
     let collection_ids = match parse_collection_ids(cmd.encoded_json.as_deref()) {
@@ -1152,8 +1166,9 @@ pub async fn execute_move_to_folder(
     cmd: MoveToFolderCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: &Unlocked<'_>,
 ) -> CommandResult {
-    let session = get_session(global_args)?;
+    let session = unlocked.session();
     let write_service = create_write_service(ctx, global_args.nointeraction);
 
     // No folder argument, or the literal `null`, means "no folder". The bulk
@@ -1191,6 +1206,7 @@ pub async fn execute_confirm(
     _cmd: ConfirmCommand,
     _global_args: &GlobalArgs,
     _ctx: &AppContext,
+    unlocked: &Unlocked<'_>,
 ) -> CommandResult {
     Err(anyhow::Error::msg("Not yet implemented"))
 }

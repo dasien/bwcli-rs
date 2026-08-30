@@ -165,7 +165,7 @@ one real bug lived in.
 
 ---
 
-## Phase 3 — typestate auth: close C27 structurally
+## Phase 3 — typestate auth: close C27 structurally — **DONE**
 
 **The defect this closes.** Auth requirements live in one hand-maintained match:
 
@@ -208,6 +208,41 @@ that is optional: Phases 1 and 2 stand alone and deliver most of the value. If
 effort runs short, stop after Phase 2 and fix C27 with the special case.
 
 **Done when:** `needs_unlocked_vault` is gone and C27 closes without a special case.
+
+**Outcome.** Both hold, in `bw-cli/src/auth_gate.rs`. Two halves:
+
+1. A `Requires` trait the command types implement themselves, **delegating** into
+   subcommand enums. That is what C27 needed: the old match answered per
+   top-level command, so a mixed case could not be expressed. `GetCommands` and
+   `SendCommands` declare their own requirement beside their definitions.
+2. An `Unlocked` token whose field is private to the module and which has no
+   public constructor, so only `satisfy` can mint one — and only after
+   `unlock_sdk` succeeds. A handler that needs crypto takes one as an argument,
+   so "forgot to check" is not expressible. The redundant in-handler gates are gone:
+   20 `get_session` calls in `vault.rs`, plus a *second* independent
+   `require_session` helper in `send.rs` that the survey had missed — two
+   parallel implementations of the same check, which is what one central token
+   replaces.
+
+The survey found that **`bw send template` had C27's defect too**, unreported:
+`Send(_) => true` made a static template demand a session. Fixed by the same
+delegation, and recorded as a correction to C27 rather than a new id.
+
+Verified: `get template` and `send template` now work with no session; their
+siblings (`get item`, `send get`, `list items`) still refuse. Differential run
+against the post-Phase-2 binary with a session: 14 of 14 command forms
+byte-identical — the only behaviour change is the two commands that no longer
+*need* a session. 285 tests pass.
+
+**Where this stops short of full typestate.** `execute_get` and `execute_send`
+still take `Option<&Unlocked>` and call `require()`, because one handler serves
+subcommands with different needs. Full compile-time enforcement would mean
+splitting them into one function per subcommand, each with the token type it
+needs. That is a further step, not taken here: it would restructure ~17 handler
+bodies for a guarantee that `Requires` already provides at the dispatch level.
+The residual risk is a `Requires` impl disagreeing with its handler, which
+`require()` reports as an internal error at one site per mixed handler rather
+than silently.
 
 ---
 

@@ -1,6 +1,7 @@
 use crate::AppContext;
 use crate::GlobalArgs;
 use crate::commands::vault::{create_vault_service, create_write_service};
+use crate::auth_gate::Unlocked;
 use crate::output::{CommandOutput, CommandResult};
 use clap::Args;
 
@@ -241,6 +242,7 @@ pub async fn execute_import(
     cmd: ImportCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: &Unlocked<'_>,
 ) -> CommandResult {
     use bw_core::services::import_export::{ImportOptions, ImportService};
     use std::collections::HashMap;
@@ -332,6 +334,7 @@ pub async fn execute_export(
     cmd: ExportCommand,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: &Unlocked<'_>,
 ) -> CommandResult {
     use bw_core::services::import_export::{ExportData, ExportOptions, ExportService};
     use secrecy::Secret;

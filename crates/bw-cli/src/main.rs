@@ -1,3 +1,4 @@
+use crate::auth_gate::{Need, Requires, Unlocked, require};
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
 
@@ -154,34 +155,16 @@ async fn main() -> ExitCode {
         Err(e) => return fail(&e.context("Failed to initialize"), &cli.global_args),
     };
 
-    // The SDK client starts each process with an empty key store, so a session
-    // key has to be loaded before any command performs vault crypto.
-    //
-    // A failure here must be fatal for commands that need crypto. It used to be
-    // logged at debug and ignored, which meant a stale session produced 11
-    // items with empty names instead of an error — decryption against an empty
-    // key store yields blanks rather than failing.
-    if needs_unlocked_vault(&cli.command) {
-        match cli.global_args.session.as_deref() {
-            Some(session) if !session.is_empty() => {
-                if let Err(e) = ctx.container().unlock_sdk(session).await {
-                    let e = e.context("Run 'bw unlock' to get a new session key.");
-                    return fail(&e, &cli.global_args);
-                }
-            }
-            _ => {
-                return fail(
-                    &anyhow::Error::msg(
-                        "Vault is locked. Run 'bw unlock' and set BW_SESSION.",
-                    ),
-                    &cli.global_args,
-                );
-            }
-        }
-    }
+    // Meet whatever the command declared it needs, once, before it runs. A
+    // command that needs an unlocked vault is then *handed* the proof; it cannot
+    // forget to check, and cannot check again.
+    let unlocked = match auth_gate::satisfy(cli.command.requires(), &cli.global_args, &ctx).await {
+        Ok(unlocked) => unlocked,
+        Err(e) => return fail(&e, &cli.global_args),
+    };
 
     // Execute command and format output
-    let result = execute_command(cli.command, &cli.global_args, &ctx).await;
+    let result = execute_command(cli.command, &cli.global_args, &ctx, unlocked.as_ref()).await;
 
     // `Ok` is success and `Err` is failure, with no third case to get wrong.
     // C31 was the absence of that guarantee: handlers returned an error *inside*
@@ -195,21 +178,36 @@ async fn main() -> ExitCode {
     }
 }
 
-/// Whether a command reads or writes vault data and therefore needs the key
-/// store populated.
+/// Every command's requirement, in one place — but *delegated* where a command's
+/// subcommands differ.
 ///
-/// Listed explicitly rather than inferred so that adding a command forces a
-/// deliberate choice. `receive` is absent on purpose: receiving a Send is
-/// anonymous and must work while locked, or logged out entirely.
-fn needs_unlocked_vault(command: &Commands) -> bool {
-    use Commands::*;
+/// This replaced `needs_unlocked_vault(&Commands) -> bool`, which answered per
+/// top-level command and therefore could not say "`get` needs an unlocked vault
+/// except for `get template`". That flattening *was* `BUGLIST.md` C27, and it
+/// silently affected `send template` too.
+///
+/// The catch-all arms are deliberate in the other direction: a new command
+/// defaults to needing an unlocked vault, so the unsafe default is the
+/// restrictive one. `Requires` for `GetCommands` and `SendCommands` lives beside
+/// those enums.
+impl Requires for Commands {
+    fn requires(&self) -> Need {
+        use Commands::*;
 
-    match command {
-        List(_) | Get(_) | Create(_) | Edit(_) | Delete(_) | Restore(_) | Move(_) | MoveToFolder(_) | Sync(_)
-        | Import(_) | Export(_) | Send(_) | Confirm(_) => true,
+        match self {
+            // Delegated: these enums have subcommands that need nothing.
+            Get(cmd) => cmd.requires(),
+            Send(cmd) => cmd.requires(),
 
-        Login(_) | Logout(_) | Lock(_) | Unlock(_) | Status(_) | Config(_) | Generate(_)
-        | Encode(_) | Decrypt(_) | Receive(_) => false,
+            // No account or session at all. `receive` is anonymous by design —
+            // receiving a Send must work while locked, or logged out entirely.
+            Login(_) | Logout(_) | Lock(_) | Unlock(_) | Status(_) | Config(_) | Generate(_)
+            | Encode(_) | Decrypt(_) | Receive(_) => Need::Nothing,
+
+            // Reads or writes vault data, so the key store must be loaded.
+            List(_) | Create(_) | Edit(_) | Delete(_) | Restore(_) | Move(_) | MoveToFolder(_)
+            | Sync(_) | Import(_) | Export(_) | Confirm(_) => Need::UnlockedVault,
+        }
     }
 }
 
@@ -217,6 +215,7 @@ async fn execute_command(
     command: Commands,
     global_args: &GlobalArgs,
     ctx: &AppContext,
+    unlocked: Option<&Unlocked<'_>>,
 ) -> output::CommandResult {
     use Commands::*;
 
@@ -225,22 +224,24 @@ async fn execute_command(
         Logout(cmd) => commands::execute_logout(cmd, global_args, ctx).await,
         Lock(cmd) => commands::execute_lock(cmd, global_args, ctx).await,
         Unlock(cmd) => commands::execute_unlock(cmd, global_args, ctx).await,
-        List(cmd) => commands::execute_list(cmd, global_args, ctx).await,
-        Get(cmd) => commands::execute_get(cmd, global_args, ctx).await,
-        Create(cmd) => commands::execute_create(cmd, global_args, ctx).await,
-        Edit(cmd) => commands::execute_edit(cmd, global_args, ctx).await,
-        Delete(cmd) => commands::execute_delete(cmd, global_args, ctx).await,
-        Restore(cmd) => commands::execute_restore(cmd, global_args, ctx).await,
-        Move(cmd) => commands::execute_move(cmd, global_args, ctx).await,
-        MoveToFolder(cmd) => commands::execute_move_to_folder(cmd, global_args, ctx).await,
-        Confirm(cmd) => commands::execute_confirm(cmd, global_args, ctx).await,
-        Sync(cmd) => commands::execute_sync(cmd, global_args, ctx).await,
+        List(cmd) => commands::execute_list(cmd, global_args, ctx, require(unlocked)?).await,
+        // Mixed: `get template` needs nothing, the rest need an unlocked vault.
+        Get(cmd) => commands::execute_get(cmd, global_args, ctx, unlocked).await,
+        Create(cmd) => commands::execute_create(cmd, global_args, ctx, require(unlocked)?).await,
+        Edit(cmd) => commands::execute_edit(cmd, global_args, ctx, require(unlocked)?).await,
+        Delete(cmd) => commands::execute_delete(cmd, global_args, ctx, require(unlocked)?).await,
+        Restore(cmd) => commands::execute_restore(cmd, global_args, ctx, require(unlocked)?).await,
+        Move(cmd) => commands::execute_move(cmd, global_args, ctx, require(unlocked)?).await,
+        MoveToFolder(cmd) => commands::execute_move_to_folder(cmd, global_args, ctx, require(unlocked)?).await,
+        Confirm(cmd) => commands::execute_confirm(cmd, global_args, ctx, require(unlocked)?).await,
+        Sync(cmd) => commands::execute_sync(cmd, global_args, ctx, require(unlocked)?).await,
         Generate(cmd) => commands::execute_generate(cmd, global_args, ctx).await,
         Encode(cmd) => commands::execute_encode(cmd, global_args, ctx).await,
         Decrypt(cmd) => commands::execute_decrypt(cmd, global_args, ctx).await,
-        Import(cmd) => commands::execute_import(cmd, global_args, ctx).await,
-        Export(cmd) => commands::execute_export(cmd, global_args, ctx).await,
-        Send(cmd) => commands::execute_send(cmd, global_args, ctx).await,
+        Import(cmd) => commands::execute_import(cmd, global_args, ctx, require(unlocked)?).await,
+        Export(cmd) => commands::execute_export(cmd, global_args, ctx, require(unlocked)?).await,
+        // Mixed: `send template` needs nothing.
+        Send(cmd) => commands::execute_send(cmd, global_args, ctx, unlocked).await,
         Receive(cmd) => commands::execute_receive(cmd, global_args, ctx).await,
         Config(cmd) => commands::execute_config(cmd, global_args, ctx).await,
         Status(cmd) => commands::execute_status(cmd, global_args, ctx).await,
@@ -249,6 +250,7 @@ async fn execute_command(
 
 // Module declarations
 mod commands;
+mod auth_gate;
 mod context;
 mod output;
 

@@ -376,3 +376,57 @@ fn quiet_suppresses_error_output_but_not_the_exit_code() {
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::is_empty());
 }
+
+/// `get template` needs no session (C27).
+///
+/// Templates are static JSON compiled into the binary. The old
+/// `needs_unlocked_vault` match answered per *top-level* command, so
+/// `Get(_) => true` made this demand a session and broke
+/// `bw get template item | bw create item` for the half that reads nothing.
+#[test]
+fn get_template_needs_no_session() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.env_remove("BW_SESSION")
+        .env_remove("BW_CLEANEXIT")
+        .args(["get", "template", "item"]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\""));
+}
+
+/// `send template` had the same defect, undetected until the Phase 3 survey.
+#[test]
+fn send_template_needs_no_session() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.env_remove("BW_SESSION")
+        .env_remove("BW_CLEANEXIT")
+        .args(["send", "template", "text"]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"text\""));
+}
+
+/// The gate still holds for siblings of those subcommands.
+///
+/// The risk in moving the requirement per-subcommand is loosening it too far, so
+/// assert the restrictive side explicitly: a sibling of `get template` and a
+/// sibling of `send template` must both still refuse without a session.
+#[test]
+fn siblings_of_the_template_subcommands_still_require_a_session() {
+    for args in [
+        vec!["get", "item", "whatever"],
+        vec!["send", "get", "whatever"],
+        vec!["list", "items"],
+    ] {
+        let mut cmd = Command::cargo_bin("bw").unwrap();
+        cmd.env_remove("BW_SESSION")
+            .env_remove("BW_CLEANEXIT")
+            .args(&args);
+
+        cmd.assert()
+            .failure()
+            .stderr(predicate::str::contains("Vault is locked"));
+    }
+}
