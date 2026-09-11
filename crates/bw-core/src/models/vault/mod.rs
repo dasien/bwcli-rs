@@ -4,7 +4,6 @@
 //! Custom types are only defined where the SDK doesn't provide suitable types.
 
 mod organization;
-mod sync_response;
 mod validation_error;
 
 // Re-export SDK vault types (only those actually exported from bitwarden-vault)
@@ -47,7 +46,6 @@ pub use bitwarden_core::OrganizationId;
 
 // CLI-specific types
 pub use organization::*;
-pub use sync_response::{parse_sync_response, SyncData, VaultData};
 pub use validation_error::*;
 
 // Re-export SDK API models for API requests/responses

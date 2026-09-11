@@ -130,6 +130,36 @@ impl Organization {
     ///
     /// Returns `None` when the server omits the id or name, since neither is
     /// usable without them.
+    /// Extract the wrapped organization keys from a sync response's profile.
+    ///
+    /// Lives beside [`Self::from_api`] because both read the same models and
+    /// both are needed on every sync. An organization whose key cannot be read
+    /// is skipped rather than failing the sync: its items simply stay
+    /// undecryptable, which is the same outcome as before and better than no
+    /// sync at all.
+    pub fn keys_from_api(
+        models: &[ProfileOrganizationResponseModel],
+    ) -> std::collections::HashMap<bitwarden_core::OrganizationId, bitwarden_crypto::UnsignedSharedKey>
+    {
+        models
+            .iter()
+            .filter_map(|o| {
+                let id = bitwarden_core::OrganizationId::new(o.id?);
+                match o
+                    .key
+                    .as_deref()?
+                    .parse::<bitwarden_crypto::UnsignedSharedKey>()
+                {
+                    Ok(key) => Some((id, key)),
+                    Err(e) => {
+                        tracing::warn!("Skipping unreadable key for organization {id}: {e}");
+                        None
+                    }
+                }
+            })
+            .collect()
+    }
+
     pub fn from_api(model: &ProfileOrganizationResponseModel) -> Option<Self> {
         let id = model.id?;
         let name = model.name.clone()?;

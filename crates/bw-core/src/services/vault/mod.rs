@@ -18,6 +18,7 @@ pub mod cipher_service;
 pub mod confirmation_service;
 pub mod errors;
 pub mod search_service;
+pub mod sync_handlers;
 pub mod sync_service;
 pub mod totp_service;
 pub mod validation_service;

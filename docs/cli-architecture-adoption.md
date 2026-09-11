@@ -281,7 +281,7 @@ of this CLI.
 | Ours | SDK | Status |
 |---|---|---|
 | Send models, 291 LOC | `bitwarden_send::{Send, SendType, SendText, SendFile, ...}` | **Done** — they were dead code; deleted (C38) |
-| `sync_service`, 260 LOC | `SyncClient`, 847 LOC | Next. Already cost us a `last_sync` race |
+| `sync_service`, 260 LOC | `SyncClient`, 847 LOC | **Done** — 260 -> 97 LOC, and the `last_sync` race is gone |
 | `auth_service` 800 + `api/` 910 LOC | `prelogin`, `login_password`, `login_api_key`, `login_device`, `send_two_factor_email` | Deferred — see below |
 
 ### Adapters — keep
@@ -309,3 +309,36 @@ without a live login. The split-token-state problem that made the two stacks
 genuinely dangerous — finding #3 in `sdk-3.0-migration.md` — is already fixed:
 the SDK owns the tokens. What remains is duplication, not incoherence, so the
 cost of waiting is low.
+
+### SyncClient adoption — what it bought and cost
+
+**Bought.** The `last_sync` race is fixed for free: `SyncClient` stamps the time
+*before* the fetch, so a change committed during the sync window is still newer
+than `last_sync` and gets picked up next run. Ours stamped it after. Also a sync
+lock, error-handler dispatch, and `last_sync` left untouched on failure.
+
+`sync_service.rs` went 260 -> 97 lines, and 130 more went with
+`models/vault/sync_response.rs` — `parse_sync_response` became dead once the SDK
+handlers owned the conversions. Folders and sends are now the SDK's own handlers;
+`SendSyncHandler` writes through `Repository<Send>`, which is our
+`JsonSendRepository`, so sends still land in `data.json` untouched.
+
+**Cost.** Three handlers are still ours, each for a reason the SDK cannot yet
+cover: `CipherSyncHandler` (no SDK equivalent), `CollectionSyncHandler`
+(`Collection` is not a registered repository item) and `OrganizationSyncHandler`
+(no `Organization` domain type). Each is written to be deleted when the SDK grows
+its own.
+
+**Two SDK gaps found.** S10: the Folder and Send handlers treat an *absent* list
+as an error, and since `SyncClient` stops at the first failure with handlers
+running in order, that aborts a run after earlier handlers have written —
+contradicting the SDK's own "Handlers MUST NOT fail, to avoid partial state
+writes". S11: `LAST_SYNC` is `pub(crate)`, so `last_sync` cannot be seeded,
+which makes the skip path untestable in isolation and costs every existing user
+one extra full download on upgrade.
+
+**Behaviour change worth knowing.** On a skip, `SyncClient` bumps `last_sync` to
+now and reports it; the old code returned the previous value unchanged. The SDK
+documents this as matching the Node CLI, so it is the parity-correct behaviour,
+but `bw status` will now show a fresh `lastSync` after a sync that downloaded
+nothing.

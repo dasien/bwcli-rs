@@ -61,7 +61,12 @@ fn sync_response_with_org() -> serde_json::Value {
         },
         "folders": [],
         "collections": [],
-        "ciphers": []
+        "ciphers": [],
+        // A real server always sends this key. It is spelled out because the
+        // SDK's `SendSyncHandler` treats an *absent* list as an error rather
+        // than as "no sends" (`BUGLIST.md` S10), and an omission here would fail
+        // the whole sync rather than this one handler.
+        "sends": []
     })
 }
 
@@ -167,12 +172,19 @@ async fn sync_persists_organizations_from_profile() {
 
 /// Regression: `force` was ignored and the full `/sync` download always ran.
 /// With no server-side changes the download must be skipped.
+///
+/// `last_sync` is established by performing a real sync rather than seeded:
+/// `SyncClient` keeps it as an SDK setting whose key (`LAST_SYNC`) is
+/// `pub(crate)` in `bitwarden-sync`, so there is no public way to write it
+/// (`BUGLIST.md` S11). Driving it through a sync is also the more honest test —
+/// it exercises the same path a user does.
 #[tokio::test]
 async fn sync_is_skipped_when_server_reports_no_changes() {
     let server = MockServer::start().await;
 
-    let last_sync = chrono::Utc::now();
-    let server_revision = last_sync - chrono::Duration::hours(1);
+    // Fixed in the past, so once the first sync stamps `last_sync` to "now" the
+    // revision check must conclude there is nothing new.
+    let server_revision = chrono::Utc::now() - chrono::Duration::hours(1);
 
     Mock::given(method("GET"))
         .and(path("/accounts/revision-date"))
@@ -180,23 +192,29 @@ async fn sync_is_skipped_when_server_reports_no_changes() {
         .mount(&server)
         .await;
 
-    // Must not be called.
+    // Exactly once: the first sync downloads (no stored `last_sync` yet, so the
+    // revision check is skipped), the second must not.
     Mock::given(method("GET"))
         .and(path("/sync"))
         .respond_with(ResponseTemplate::new(200).set_body_json(sync_response_with_org()))
-        .expect(0)
+        .expect(1)
         .mount(&server)
         .await;
 
-    let (service, _storage, _tmp) = setup(&server, Some(&last_sync.to_rfc3339())).await;
+    let (service, _storage, _tmp) = setup(&server, None).await;
 
-    let returned = service.sync(false).await.expect("sync should succeed");
+    let first = service.sync(false).await.expect("first sync should succeed");
+    let second = service
+        .sync(false)
+        .await
+        .expect("second sync should succeed");
 
-    assert_eq!(
-        returned,
-        last_sync.to_rfc3339(),
-        "should report the existing timestamp when nothing changed"
+    assert!(
+        second >= first,
+        "the skip path must still report a timestamp, not regress it: {first} -> {second}"
     );
+    // `expect(1)` on the /sync mock is what proves the download was skipped; it
+    // is verified when the server drops.
 }
 
 #[tokio::test]
@@ -255,25 +273,41 @@ async fn sync_downloads_when_server_has_newer_revision() {
 }
 
 /// A negative revision timestamp is how the server signals a deleted account.
+/// A negative account revision date means the account is gone server-side.
+///
+/// The revision check only runs once a `last_sync` exists, so this syncs
+/// normally first, then swaps the server's answer for a negative timestamp.
 #[tokio::test]
 async fn negative_revision_date_reports_deleted_account() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
         .and(path("/accounts/revision-date"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(-1i64))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json((chrono::Utc::now() - chrono::Duration::hours(1)).timestamp_millis()),
+        )
         .mount(&server)
         .await;
-
     Mock::given(method("GET"))
         .and(path("/sync"))
         .respond_with(ResponseTemplate::new(200).set_body_json(sync_response_with_org()))
-        .expect(0)
         .mount(&server)
         .await;
 
-    let (service, _storage, _tmp) =
-        setup(&server, Some(&chrono::Utc::now().to_rfc3339())).await;
+    let (service, _storage, _tmp) = setup(&server, None).await;
+    service
+        .sync(false)
+        .await
+        .expect("the first sync establishes last_sync");
+
+    // Now the account disappears.
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/accounts/revision-date"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(-1_i64))
+        .mount(&server)
+        .await;
 
     let err = service
         .sync(false)
@@ -281,34 +315,28 @@ async fn negative_revision_date_reports_deleted_account() {
         .expect_err("a deleted account should be reported");
 
     assert!(
-        err.to_string().contains("no longer exists"),
-        "unexpected error: {err}"
+        err.to_string().to_lowercase().contains("deleted"),
+        "error should name the cause, got: {err}"
     );
 }
 
-
-/// The organization key has to come out of the sync response's profile, or
-/// organization-owned items cannot be decrypted and nothing can be shared *into*
-/// an organization — the share re-encrypts under that key. Nothing extracted it
-/// before, so `bw move` would have failed at encryption time.
 #[test]
 fn the_sync_response_yields_organization_keys() {
     let response: bitwarden_api_api::models::SyncResponseModel =
         serde_json::from_value(sync_response_with_org()).unwrap();
 
-    let parsed = bw_core::models::vault::parse_sync_response(response).unwrap();
+    let profile = response.profile.as_deref().unwrap();
+    let orgs = profile.organizations.as_ref().unwrap();
 
-    assert_eq!(parsed.organizations.len(), 1);
+    let keys = Organization::keys_from_api(orgs);
+
+    assert_eq!(orgs.iter().filter_map(Organization::from_api).count(), 1);
     assert_eq!(
-        parsed.organization_keys.len(),
+        keys.len(),
         1,
         "the profile's organization key must be extracted"
     );
-    assert!(
-        parsed
-            .organization_keys
-            .contains_key(&TEST_ORG_ID.parse().unwrap())
-    );
+    assert!(keys.contains_key(&TEST_ORG_ID.parse().unwrap()));
 }
 
 /// An unreadable organization key must not fail the whole sync: that
@@ -321,11 +349,18 @@ fn an_unreadable_organization_key_is_skipped_not_fatal() {
     let response: bitwarden_api_api::models::SyncResponseModel =
         serde_json::from_value(body).unwrap();
 
-    let parsed = bw_core::models::vault::parse_sync_response(response)
-        .expect("a bad organization key must not fail the sync");
+    let profile = response.profile.as_deref().unwrap();
+    let orgs = profile.organizations.as_ref().unwrap();
 
-    assert_eq!(parsed.organizations.len(), 1, "the organization is still listed");
-    assert!(parsed.organization_keys.is_empty());
+    assert_eq!(
+        orgs.iter().filter_map(Organization::from_api).count(),
+        1,
+        "the organization is still listed"
+    );
+    assert!(
+        Organization::keys_from_api(orgs).is_empty(),
+        "an unreadable key is skipped, not fatal"
+    );
 }
 
 /// An organization key that cannot be *unwrapped* (no private key in the store,

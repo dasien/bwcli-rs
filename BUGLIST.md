@@ -66,6 +66,8 @@ left alone.
 | S7 | `CipherPermissions` is `deny_unknown_fields`, rejects TS-CLI data | Won't fix |
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 | S9 | Attachment upload machinery is private; the generated endpoint sends no body | Worked around |
+| S10 | `Folder`/`Send` sync handlers fail on an *absent* list, aborting a sync mid-write | Worked around |
+| S11 | No public way to seed or clear `last_sync` | Worked around |
 
 **bwcli-rs** — 3 open, 36 fixed.
 
@@ -266,6 +268,45 @@ found in a single afternoon of live testing after C12 made errors legible.
   not the workspace's (0.12), because `ClientWithMiddleware::multipart` takes the
   0.13 `Form` type. Hence the `reqwest_sdk` alias in the workspace manifest.
   Both versions were already in the graph, so it costs no compilation.
+
+#### S10. The Folder and Send sync handlers fail on an *absent* list, aborting a sync mid-write
+- **Location:** `crates/bitwarden-vault/src/folder/folder_sync_handler.rs`,
+  `crates/bitwarden-send/src/send_sync_handler.rs`
+- **What happens:** both open with `require!(response.folders.as_ref())` /
+  `require!(response.sends.as_ref())`, so a sync response *omitting* the key is
+  an error rather than "nothing of this kind". `SyncClient` stops at the first
+  failing handler, and handlers run in registration order — so a response
+  without `sends` aborts the run *after* ciphers and folders have already been
+  written. A partial state write, which is precisely what the SDK's own
+  `CryptoSyncHandler` warns against: "Handlers MUST NOT fail, to avoid partial
+  state writes."
+- **Found by:** adopting `SyncClient`. Our sync-service tests had fixtures
+  without a `sends` key — previously fine, because our hand-rolled sync treated
+  a missing list as empty — and all six failed with
+  *"missing a required field: response.sends.as_ref()"*.
+- **Proposed SDK fix:** treat an absent list as empty, as the crypto handler
+  treats absent sections.
+- **Our fix:** none available — the handlers are what we want to use. Our own
+  handlers (`CipherSyncHandler`, `CollectionSyncHandler`,
+  `OrganizationSyncHandler`) deliberately tolerate absence. A real server always
+  sends these keys, so this is latent rather than active; the test fixtures now
+  spell them out with a comment saying why. **Worked around.**
+
+#### S11. No public way to seed or clear `last_sync`
+- **Location:** `crates/bitwarden-sync/src/state.rs` — `pub(crate) const LAST_SYNC`
+- **What happens:** `SyncClient::last_sync()` reads it, but the setting key is
+  `pub(crate)`, so nothing outside `bitwarden-sync` can write it. The only way
+  to establish a `last_sync` is to perform a real sync, and there is no way to
+  clear one.
+- **Why it matters:** the revision-date short-circuit only engages once a
+  `last_sync` exists, so testing the skip path in isolation is impossible — a
+  test must run one sync to arm the next. It also means a client cannot migrate
+  an existing `last_sync` from its own storage into the SDK, so adopting
+  `SyncClient` costs every existing user exactly one extra full download.
+- **Proposed SDK fix:** export the setting key, or add `set_last_sync`/`clear`.
+- **Our fix:** the tests drive it through a real sync, which is arguably more
+  honest anyway. The one-off extra download on upgrade is accepted and noted in
+  `sync_service.rs`. **Worked around.**
 
 ---
 
