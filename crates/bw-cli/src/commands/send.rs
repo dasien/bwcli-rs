@@ -121,6 +121,13 @@ pub struct SendDeleteCommand {
 struct SendJsonInput {
     name: String,
     notes: Option<String>,
+    /// The TypeScript CLI's numeric `SendType`: 0 text, 1 file, 2 item.
+    ///
+    /// Parsed so an unsupported kind is *named* rather than silently mistreated.
+    /// Without this, a `"type": 2` document fell through to the text path and
+    /// failed with "A text Send needs text content", which describes neither
+    /// the input nor the reason.
+    r#type: Option<u8>,
     text: Option<SendTextInput>,
     file: Option<SendFileInput>,
     deletion_date: Option<DateTime<Utc>>,
@@ -226,6 +233,8 @@ async fn execute_send_create(
         }
     }
 
+    reject_unsupported_send_type(&input)?;
+
     if cmd.file.is_some() || input.file.is_some() {
         anyhow::bail!(
             "File Sends are not supported yet; only text Sends can be created. \
@@ -265,6 +274,24 @@ async fn execute_send_create(
     send_response(global_args, &view)
 }
 
+/// Refuse a Send kind we do not handle, naming it.
+///
+/// `SendType::Item` — a vault item shared as a Send — arrived in the SDK at
+/// `26112cf3`. The **TypeScript CLI does not implement it either**: it
+/// recognises the type and answers "Item type Send functionality not yet
+/// available" (`clients/apps/cli/src/tools/send/commands/create.command.ts:151`).
+/// So parity here is *recognising and refusing*, not implementing — and the
+/// message is copied verbatim so a script matching on it behaves the same.
+fn reject_unsupported_send_type(input: &SendJsonInput) -> anyhow::Result<()> {
+    match input.r#type {
+        Some(2) => anyhow::bail!("Item type Send functionality not yet available"),
+        Some(t) if t > 2 => anyhow::bail!(
+            "Unknown Send type {t}. Valid types are: file, text"
+        ),
+        _ => Ok(()),
+    }
+}
+
 async fn execute_send_edit(
     cmd: SendEditCommand,
     global_args: &GlobalArgs,
@@ -276,6 +303,8 @@ async fn execute_send_edit(
 
     let input = parse_send_input(&cmd.json)?;
     let existing = ctx.sdk().sends().get(id).await?;
+
+    reject_unsupported_send_type(&input)?;
 
     if input.file.is_some() {
         anyhow::bail!("File Sends are not supported yet; only text Sends can be edited.");

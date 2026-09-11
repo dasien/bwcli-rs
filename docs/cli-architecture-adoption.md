@@ -265,3 +265,47 @@ stays unverified through all three phases.
 Worth stating plainly because the risk is real: a large refactor that leaves the
 tests green *feels* like proof, and here it would not be. Re-run the live checks
 in `HANDOFF.md` §7 after Phase 2, when output handling has moved.
+
+---
+
+## Beyond the three phases: "if the SDK has it, use it"
+
+An audit on 2026-09-11 of where we still duplicate SDK types, methods or logic.
+The motto is right, but it needs one qualification: **an adapter between the
+TypeScript CLI's storage format and an SDK domain type is not duplication.**
+Deleting those would break `data.json` compatibility, which is the whole point
+of this CLI.
+
+### Duplication — adopt the SDK
+
+| Ours | SDK | Status |
+|---|---|---|
+| Send models, 291 LOC | `bitwarden_send::{Send, SendType, SendText, SendFile, ...}` | **Done** — they were dead code; deleted (C38) |
+| `sync_service`, 260 LOC | `SyncClient`, 847 LOC | Next. Already cost us a `last_sync` race |
+| `auth_service` 800 + `api/` 910 LOC | `prelogin`, `login_password`, `login_api_key`, `login_device`, `send_two_factor_email` | Deferred — see below |
+
+### Adapters — keep
+
+- `KdfConfig`/`KdfType` — `data.json` stores KDF as a *number*; converts to
+  `bitwarden_crypto::Kdf`, which it already delegates to.
+- `TwoFactorMethod` — already converts to the SDK's `TwoFactorProvider`.
+- `EnvironmentUrls` — `data.json` shape; SDK `BaseUrls` is used where the SDK owns it.
+- `Organization` / `OrganizationPermissions` — the SDK has **no** Organization
+  domain type, and no repository for one.
+- `sync_response.rs` — glue that already calls the SDK's `try_into()`.
+
+### Where we are ahead of the SDK
+
+**Import.** We support Bitwarden CSV/JSON, Chrome, LastPass and 1Password.
+`ImporterClient` exposes exactly one method, `import_kdbx`. The gap runs the
+other way: **we do not support kdbx and the SDK does.**
+
+### Why auth is deferred rather than done
+
+It is the largest item, but that is not the reason. It is the one path where a
+subtle break locks a user out of their own vault, new-device OTP has no apparent
+SDK equivalent (so it would be a partial migration), and it cannot be verified
+without a live login. The split-token-state problem that made the two stacks
+genuinely dangerous — finding #3 in `sdk-3.0-migration.md` — is already fixed:
+the SDK owns the tokens. What remains is duplication, not incoherence, so the
+cost of waiting is low.

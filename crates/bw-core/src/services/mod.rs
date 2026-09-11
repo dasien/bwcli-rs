@@ -18,7 +18,6 @@ pub mod auth;
 pub mod vault;
 
 // Send module
-pub mod send;
 
 // Import/Export module
 pub mod import_export;

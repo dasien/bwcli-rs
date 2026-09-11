@@ -67,7 +67,7 @@ left alone.
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 | S9 | Attachment upload machinery is private; the generated endpoint sends no body | Worked around |
 
-**bwcli-rs** — 4 open, 35 fixed.
+**bwcli-rs** — 3 open, 36 fixed.
 
 | | Bug | Status |
 |---|---|---|
@@ -75,7 +75,7 @@ left alone.
 | C30 | No local premium pre-check on attachment commands | **Open** |
 | C36 | Default output is pretty JSON; the TypeScript CLI is compact | **Open** |
 | C37 | `bw export` item order is non-deterministic | **Open** |
-| C38 | Item-based sends unsupported; our `SendType` duplicates the SDK's | **Open** |
+| C38 | Item-based sends unhandled; dead duplicate send models | Fixed |
 | C31 | Every failing command exited 0 | Fixed |
 | C35 | `--raw` emitted a trailing blank line on `get username|password|uri` | Fixed |
 | C34 | `--output` reported a relative path for some forms | Fixed |
@@ -306,24 +306,36 @@ found in a single afternoon of live testing after C12 made errors legible.
   itself.
 - **Status:** **Open.**
 
-#### C38. Item-based sends are unsupported, and our `SendType` duplicates the SDK's
-- **Command:** `bw send create`, `bw send get`, `bw receive`
-- **Location:** `bw-core/src/models/send/send.rs` — our own `SendType` enum
-- **What happens:** the SDK gained a third send kind at `26112cf3` —
-  `SendType::Item`, carrying `SendItemView { data: CipherView }`, i.e. a vault
-  item shared as a Send. We do not support it, and cannot see it: we define our
-  *own* `SendType` with only `Text` and `File`, rather than using
-  `bitwarden_send::SendType`.
-- **Why the duplicate matters more than the missing feature:** because the enum
-  is ours, adding `Item` to the SDK did **not** break our build. A duplicated
-  model turns a compile error into a silent capability gap — the pin exists to
-  make SDK changes loud, and a parallel type defeats it. Receiving an
-  item-based Send will fail at parse time rather than at build time.
-- **Related:** the same bump added `SendView.data`, which *did* break a test
-  literal, because that one uses the SDK type. That is the pin working.
-- **Fix:** drop our `SendType`/`Send` models for the SDK's, as the vault types
-  already were. Then item support becomes a visible, typed gap.
-- **Status:** **Open.**
+#### C38. Item-based sends were unhandled, behind a dead duplicate of the SDK's send models
+- **Command:** `bw send create`, `bw send edit`
+- **Location:** `bw-core/src/models/send/` (deleted), `bw-cli/src/commands/send.rs`
+- **Correction to the original entry.** It claimed our own `SendType` was what
+  stopped the SDK's new `Item` variant from breaking the build. That was wrong
+  in two ways, found by actually tracing the imports:
+  1. Our send models were **dead code**. Nothing outside `models/send/` used
+     them; the live paths (`commands/send.rs`, `send_repository.rs`,
+     `sync_response.rs`, the tests) already used `bitwarden_send` types. The
+     duplicate was not shadowing anything.
+  2. The real reason a new variant broke nothing is that **nothing matches
+     exhaustively** on `SendType` — it is only ever constructed. Adding a
+     variant is source-compatible with construction.
+  The original entry's conclusion — that a duplicated model turns a compile
+  error into a silent gap — is still the right lesson; it just was not the
+  mechanism here.
+- **What was actually broken:** `SendJsonInput` did not parse `type` at all, so a
+  `"type": 2` document fell through to the text path and failed with "A text Send
+  needs text content" — a message describing neither the input nor the reason.
+- **Parity, read from the source:** the TypeScript CLI **does not implement item
+  sends either**. It recognises the type and answers "Item type Send
+  functionality not yet available"
+  (`clients/apps/cli/src/tools/send/commands/create.command.ts:151`). So parity
+  is *recognising and refusing*, not implementing. Had this not been checked, the
+  obvious reading of "the SDK supports it, we don't" would have produced a
+  feature the CLI we are replacing does not have.
+- **Fix:** 291 lines of dead send models and the dead `services/send` module
+  deleted; `type` is now parsed and an item send refused with the TypeScript
+  CLI's message verbatim, so a script matching on it behaves the same. Unknown
+  types above 2 get upstream's "Valid types are: file, text". **Fixed.**
 
 ### Fixed
 
