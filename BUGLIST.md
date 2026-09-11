@@ -67,7 +67,7 @@ left alone.
 | S8 | `bitwarden-sensitive-value` doesn't zeroize | Won't fix |
 | S9 | Attachment upload machinery is private; the generated endpoint sends no body | Worked around |
 
-**bwcli-rs** — 3 open, 35 fixed.
+**bwcli-rs** — 4 open, 35 fixed.
 
 | | Bug | Status |
 |---|---|---|
@@ -75,6 +75,7 @@ left alone.
 | C30 | No local premium pre-check on attachment commands | **Open** |
 | C36 | Default output is pretty JSON; the TypeScript CLI is compact | **Open** |
 | C37 | `bw export` item order is non-deterministic | **Open** |
+| C38 | Item-based sends unsupported; our `SendType` duplicates the SDK's | **Open** |
 | C31 | Every failing command exited 0 | Fixed |
 | C35 | `--raw` emitted a trailing blank line on `get username|password|uri` | Fixed |
 | C34 | `--output` reported a relative path for some forms | Fixed |
@@ -303,6 +304,25 @@ found in a single afternoon of live testing after C12 made errors legible.
 - **Found by:** a differential export comparison that reported a difference with
   *identical byte counts* — which prompted checking the same binary against
   itself.
+- **Status:** **Open.**
+
+#### C38. Item-based sends are unsupported, and our `SendType` duplicates the SDK's
+- **Command:** `bw send create`, `bw send get`, `bw receive`
+- **Location:** `bw-core/src/models/send/send.rs` — our own `SendType` enum
+- **What happens:** the SDK gained a third send kind at `26112cf3` —
+  `SendType::Item`, carrying `SendItemView { data: CipherView }`, i.e. a vault
+  item shared as a Send. We do not support it, and cannot see it: we define our
+  *own* `SendType` with only `Text` and `File`, rather than using
+  `bitwarden_send::SendType`.
+- **Why the duplicate matters more than the missing feature:** because the enum
+  is ours, adding `Item` to the SDK did **not** break our build. A duplicated
+  model turns a compile error into a silent capability gap — the pin exists to
+  make SDK changes loud, and a parallel type defeats it. Receiving an
+  item-based Send will fail at parse time rather than at build time.
+- **Related:** the same bump added `SendView.data`, which *did* break a test
+  literal, because that one uses the SDK type. That is the pin working.
+- **Fix:** drop our `SendType`/`Send` models for the SDK's, as the vault types
+  already were. Then item support becomes a visible, typed gap.
 - **Status:** **Open.**
 
 ### Fixed

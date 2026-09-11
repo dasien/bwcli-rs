@@ -87,6 +87,9 @@ async fn make_send(client: &Client, name: &str) -> (SendId, Send) {
             text: Some(format!("secret for {name}")),
             hidden: false,
         }),
+        // Item-based sends (`SendType::Item`) arrived in the SDK after our
+        // previous pin; a text send carries no item payload.
+        data: None,
         max_access_count: None,
         access_count: 0,
         disabled: false,

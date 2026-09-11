@@ -12,7 +12,7 @@ defects that analysis turned up along the way.
 - Strategy: **adopt SDK crates, stay an independent CLI.** `crates/bw` is a
   reference implementation to crib from, not a destination.
 - SDK consumption: **track the SDK's main.** Do each migration against a fixed
-  commit (currently `9794da58`) so the target doesn't move mid-change, then
+  commit (currently `26112cf3`) so the target doesn't move mid-change, then
   resume tracking.
 
 ## Decided (2026-08-22): go SDK-native, and target TS-CLI replacement
@@ -109,7 +109,8 @@ Object-level gaps:
 
 ### What the SDK already provides for each stub
 
-Surveyed 2026-08-23 against `sdk-internal` at `rust-v3.0.0` (`9794da5`). Every
+Surveyed 2026-08-23 against `sdk-internal` at `9794da58`, re-checked at
+`26112cf3` on 2026-09-11 — none of these gaps closed. Every
 "Not yet implemented" message is **ours** (`Response::error` in
 `crates/bw-cli/src/commands/`) — none of these reach `bw-core`, let alone the SDK.
 The question is what it would take to make each real.

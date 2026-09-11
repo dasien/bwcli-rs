@@ -34,7 +34,7 @@ git ls-files | grep -iE "sqlite|data\.json|bw-data|bwsession"   # must print not
 | Repo | Path | Pin | Why |
 |---|---|---|---|
 | `bwcli-rs` | `~/Source/repos/bwcli-rs` | branch `sdk-3.0-migration` | this project |
-| `sdk-internal` | `~/Source/repos/sdk-internal` | tag **`rust-v3.0.0`** (`9794da5`) | **path dependency** — the build fails without it |
+| `sdk-internal` | sibling of `bwcli-rs` | commit **`26112cf3`** | **path dependency** — the build fails without it |
 | `Bitwarden/clients` | `~/Source/repos/Bitwarden/clients` | `cce8a34`, CLI `v2026.8.0` | source of truth for TypeScript-CLI parity |
 
 `Cargo.toml` uses **relative path dependencies** — `path = "../sdk-internal/crates/..."`
@@ -60,17 +60,23 @@ git clone https://github.com/bitwarden/sdk-internal.git
 git clone https://github.com/bitwarden/clients.git Bitwarden/clients
 
 cd bwcli-rs      && git checkout sdk-3.0-migration
-cd ../sdk-internal && git checkout rust-v3.0.0        # detached HEAD, deliberately
+cd ../sdk-internal && git checkout 26112cf3           # detached HEAD, deliberately
 ```
 
 ### The SDK pin is not optional
 
-`sdk-internal` is checked out at the **tag `rust-v3.0.0`, detached HEAD** — not
-`main`. `Cargo.toml` also pins `version = "=3.0.0"` on every crate, so a
-`sdk-internal` on `main` whose crates have moved past 3.0.0 fails at dependency
-resolution rather than compiling against something unexpected. That is the
-intended behaviour: the 2.0→3.0 upgrade broke on an exhaustive struct literal, and
-the pin makes such a break loud.
+`sdk-internal` is checked out at **commit `26112cf3`, detached HEAD** — not
+`main`, and deliberately *not* a tag.
+
+**Do not use the `rust-v3.0.0` tag.** It is not where it looks: locally it
+resolves to `7fd530e4` (May 2026), which predates `bitwarden-unlock` entirely, so
+dependency resolution fails before anything compiles. The commit SHA is the
+trustworthy pin; the tag is not.
+
+`Cargo.toml` pins `version = "=3.0.0"` on every crate, so an `sdk-internal` whose
+crates have moved past 3.0.0 fails at dependency resolution rather than compiling
+against something unexpected. That is intended: the 2.0->3.0 upgrade broke on an
+exhaustive struct literal, and the pin makes such a break loud.
 
 If you want to move the SDK forward, do it as its own commit that also updates the
 `=3.0.0` pins, so a bisect can tell an SDK bump from a CLI change.
