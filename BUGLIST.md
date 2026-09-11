@@ -199,7 +199,7 @@ found in a single afternoon of live testing after C12 made errors legible.
   `SettingItem`, `OrganizationSharedKey` and `Send` — but not
   `LocalUserDataKeyState`, which `initialize_user_crypto` then tries to write.
   Result: `Unable to initialize local user data key` logged at **ERROR** on every
-  unlock. Upstream's own `bw` hits this too, since it uses this exact list.
+  unlock. `crates/bw` hits this too, since it uses this exact list.
 - **Our fix:** our own migration list adds `Add(LocalUserDataKeyState::data())`,
   keeping the shared entries in the same order so the two stay compatible.
   **Worked around** (`services/sdk.rs::state_migrations`).

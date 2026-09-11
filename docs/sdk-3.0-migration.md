@@ -7,10 +7,10 @@ defects that analysis turned up along the way.
 
 - bwcli-rs was written against SDK **1.0.0**; `Cargo.toml` is bumped to **2.0.0**
   (builds clean).
-- Upstream `sdk-internal` main is at **3.0.0** — 582 commits / ~8 months ahead of
+- The SDK's `main` is at **3.0.0** — 582 commits / ~8 months ahead of
   the local checkout, with 22 new crates.
-- Strategy: **adopt SDK crates, stay an independent CLI.** Upstream's own
-  `crates/bw` is a reference implementation to crib from, not a destination.
+- Strategy: **adopt SDK crates, stay an independent CLI.** `crates/bw` is a
+  reference implementation to crib from, not a destination.
 - SDK consumption: **track the SDK's main.** Do each migration against a fixed
   commit (currently `9794da58`) so the target doesn't move mid-change, then
   resume tracking.
@@ -67,7 +67,7 @@ higher-level bookkeeping. Two smaller gaps had to be worked around:
   if that stops being true.
 - `CipherResponseModel` carries no `collectionIds`, so an edit has to carry the
   ones it sent forward by hand. Missing this would silently unshare an
-  organization item on every edit. (Upstream's `edit.rs` has a test for exactly
+  organization item on every edit. (The SDK's `edit.rs` has a test for exactly
   this, which is how the trap was spotted.)
 
 Revisit if those types get exported.

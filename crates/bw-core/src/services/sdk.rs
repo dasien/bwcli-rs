@@ -115,7 +115,7 @@ pub fn create_sdk_client_with_state(
 /// `LocalUserDataKeyState`, which that list omits even though
 /// `initialize_user_crypto` tries to initialize it — without the table, every
 /// unlock logs `Unable to initialize local user data key` at ERROR level.
-/// Upstream's own `bw` hits the same thing.
+/// `crates/bw` hits the same thing.
 ///
 /// Order matters and is append-only: removing a repository needs an explicit
 /// `Remove` step, not a deletion from this list. Keep the shared entries in the
