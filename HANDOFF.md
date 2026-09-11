@@ -252,6 +252,35 @@ scripts/check-secrets.sh --staged     # what pre-commit runs
 scripts/check-secrets.sh master..HEAD # every commit on the branch
 ```
 
+### `scripts/diff-against.sh` — the one check that crosses the network
+
+A green suite proves very little here, because no test reaches a server. This
+builds an older revision beside the current one and runs both against the same
+vault, diffing stdout, stderr and exit code:
+
+```bash
+export BITWARDENCLI_APPDATA_DIR=/tmp/bw-test/appdata
+export BW_SESSION="$(./target/release/bw unlock --raw)"
+cargo build --release
+scripts/diff-against.sh HEAD~1 <an-item-id>
+```
+
+It is what caught C32, C33 and C35, and what confirmed the `SyncClient` rewrite
+changed nothing user-visible (19 forms identical). Run it after any refactor
+that touches output, errors, or sync.
+
+Two things to know. It **normalises RFC3339 timestamps**, or `sync` would always
+report a false difference — the surrounding text is still compared, so a wording
+or format change still shows. And it cannot see trailing-whitespace bugs: an
+earlier version captured with `$(...)`, which strips trailing newlines, and C35
+lived in exactly that whitespace. Check exact bytes with `od -c` when output
+framing is what changed.
+
+Its scratch — worktree, captured output — lives in a `mktemp -d` outside the
+repo at mode 0700 and is deleted on exit, because the captured output contains
+decrypted vault contents. The session key is read from the environment and never
+written or printed.
+
 **Prefer `git add <path>` to `git add -A`.** The hooks make a sweep safe rather
 than fatal, but `-A` is what turned a shell typo into a published credential.
 
