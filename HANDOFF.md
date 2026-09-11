@@ -6,17 +6,13 @@ the current work was verified against.
 
 ## 1. Push what is here first
 
-**This branch is not on the remote yet.** From the machine you are leaving:
+**Everything is on `master` and pushed.** The `sdk-3.0-migration` branch this
+document was originally written against has been merged and deleted; work on
+topic branches from `master` from here.
 
-```bash
-cd ~/Source/repos/bwcli-rs
-git status                              # expect a clean tree
-git push -u origin sdk-3.0-migration
-```
-
-The branch is a series of commits ahead of `master`, ending with the one that adds
-this file. `git log --oneline master..sdk-3.0-migration` is the index; the commit
-messages carry the reasoning and the live-verification results.
+`git log --oneline` is the index — the commit messages carry the reasoning and
+the live-verification results, and are the most reliable account of why anything
+is the way it is.
 
 Nothing sensitive is tracked, and `.gitignore` covers `data.json`, `user.sqlite`
 and `bw-data/`. Worth re-checking before you push, because these hold live
@@ -33,7 +29,7 @@ git ls-files | grep -iE "sqlite|data\.json|bw-data|bwsession"   # must print not
 
 | Repo | Path | Pin | Why |
 |---|---|---|---|
-| `bwcli-rs` | `~/Source/repos/bwcli-rs` | branch `sdk-3.0-migration` | this project |
+| `bwcli-rs` | sibling of `sdk-internal` | branch `master` | this project |
 | `sdk-internal` | sibling of `bwcli-rs` | commit **`26112cf3`** | **path dependency** — the build fails without it |
 | `Bitwarden/clients` | `~/Source/repos/Bitwarden/clients` | `cce8a34`, CLI `v2026.8.0` | source of truth for TypeScript-CLI parity |
 
@@ -59,7 +55,6 @@ git clone https://github.com/dasien/bwcli-rs.git
 git clone https://github.com/bitwarden/sdk-internal.git
 git clone https://github.com/bitwarden/clients.git Bitwarden/clients
 
-cd bwcli-rs      && git checkout sdk-3.0-migration
 cd ../sdk-internal && git checkout 26112cf3           # detached HEAD, deliberately
 ```
 
@@ -316,7 +311,7 @@ does nothing while reporting success.
 |---|---|
 | `docs/sdk-3.0-migration.md` | why the migration went the way it did: the SDK-native decision, phases 1–10, the parity matrix, the per-stub SDK-capability survey, and the "do not adopt" list with reasons |
 | `BUGLIST.md` | every defect found, SDK and ours, open and fixed — 3 open, 36 fixed, 11 SDK. Read the header: ids are stable, corrections are noted in place |
-| `git log master..sdk-3.0-migration` | the commit messages carry the reasoning and the live-verification results |
+| `git log --oneline` | the commit messages carry the reasoning and the live-verification results |
 
 Two themes to absorb before trusting the suite:
 
