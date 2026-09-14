@@ -483,3 +483,76 @@ fn base64_encode(input: &str) -> String {
         Err(_) => String::new(),
     }
 }
+
+/// Structured output is compact by default (C36).
+///
+/// The TypeScript CLI's `getJson` switches on `BW_PRETTY` alone, so its default
+/// is one line. Ours pretty-printed by default, which meant
+/// `bw get item x | wc -l` gave ~25 against the TypeScript CLI's 1.
+///
+/// `get template` is used because it needs no session and returns an object.
+#[test]
+fn structured_output_is_compact_by_default() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.env_remove("BW_PRETTY")
+        .env_remove("BW_SESSION")
+        .args(["get", "template", "item"]);
+
+    let out = cmd.assert().success().get_output().stdout.clone();
+    let text = String::from_utf8(out).unwrap();
+
+    assert_eq!(
+        text.trim_end().lines().count(),
+        1,
+        "default output should be a single compact line, got:\n{text}"
+    );
+    assert!(text.starts_with('{'), "should still be a JSON document");
+}
+
+/// `--pretty` is what indents, and the only thing that does.
+#[test]
+fn pretty_indents_structured_output() {
+    let mut cmd = Command::cargo_bin("bw").unwrap();
+    cmd.env_remove("BW_PRETTY")
+        .env_remove("BW_SESSION")
+        .args(["get", "template", "item", "--pretty"]);
+
+    let out = cmd.assert().success().get_output().stdout.clone();
+    let text = String::from_utf8(out).unwrap();
+
+    assert!(
+        text.lines().count() > 1,
+        "--pretty should indent across lines, got:\n{text}"
+    );
+    assert!(text.contains("\n  "), "should be indented two spaces");
+}
+
+/// `--raw` must not change JSON formatting at all.
+///
+/// In the TypeScript CLI `--raw` does exactly two things: return
+/// `MessageResponse.raw` instead of prose, and send a payload to stdout instead
+/// of a file. It has no bearing on how JSON is rendered. Ours used it as the
+/// compact switch, so `--raw` and `--pretty` were opposites rather than
+/// unrelated.
+#[test]
+fn raw_does_not_affect_json_formatting() {
+    let run = |extra: &[&str]| {
+        let mut cmd = Command::cargo_bin("bw").unwrap();
+        cmd.env_remove("BW_PRETTY").env_remove("BW_SESSION");
+        cmd.args(["get", "template", "item"]);
+        cmd.args(extra);
+        let out = cmd.assert().success().get_output().stdout.clone();
+        String::from_utf8(out).unwrap()
+    };
+
+    assert_eq!(
+        run(&[]),
+        run(&["--raw"]),
+        "--raw should render identically to the default"
+    );
+    assert_ne!(
+        run(&[]),
+        run(&["--pretty"]),
+        "--pretty should still differ from the default"
+    );
+}

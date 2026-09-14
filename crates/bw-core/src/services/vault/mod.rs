@@ -303,17 +303,33 @@ impl VaultService {
     /// Exposed for callers that hand ciphers to SDK APIs which decrypt
     /// internally (export), so they must not be pre-decrypted.
     pub async fn encrypted_ciphers(&self) -> Result<Vec<Cipher>, VaultError> {
-        Ok(self
+        let mut ciphers: Vec<Cipher> = self
             .get_ciphers()
             .await?
             .into_values()
             .filter(|c| c.deleted_date.is_none())
-            .collect())
+            .collect();
+
+        // Sorted because these back `bw export`, and the source is a `HashMap`
+        // whose iteration order is not stable: three consecutive exports of an
+        // unchanged vault produced three different orderings (`BUGLIST.md` C37).
+        // That makes an export impossible to diff against a previous one or
+        // checksum to detect drift, both ordinary things to do with a backup.
+        //
+        // By id rather than name: ids are unique and immutable, so the order is
+        // total and does not shift when an item is renamed.
+        ciphers.sort_by_key(|c| c.id);
+        Ok(ciphers)
     }
 
     /// Encrypted folders as stored. See [`Self::encrypted_ciphers`].
+    ///
+    /// Sorted by id for the same reason, so a whole export is reproducible
+    /// rather than just its items.
     pub async fn encrypted_folders(&self) -> Result<Vec<Folder>, VaultError> {
-        Ok(self.get_folders().await?.into_values().collect())
+        let mut folders: Vec<Folder> = self.get_folders().await?.into_values().collect();
+        folders.sort_by_key(|f| f.id);
+        Ok(folders)
     }
 
     /// Turn a cache deserialization failure into something actionable.

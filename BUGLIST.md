@@ -69,14 +69,15 @@ left alone.
 | S10 | `Folder`/`Send` sync handlers fail on an *absent* list, aborting a sync mid-write | Worked around |
 | S11 | No public way to seed or clear `last_sync` | Worked around |
 
-**bwcli-rs** — 3 open, 36 fixed.
+**bwcli-rs** — 1 open, 39 fixed.
 
 | | Bug | Status |
 |---|---|---|
 | C27 | `bw get template` (and `bw send template`) needed an unlocked vault | Fixed |
 | C30 | No local premium pre-check on attachment commands | **Open** |
-| C36 | Default output is pretty JSON; the TypeScript CLI is compact | **Open** |
-| C37 | `bw export` item order is non-deterministic | **Open** |
+| C36 | Default output was pretty JSON; the TypeScript CLI is compact | Fixed |
+| C37 | `bw export` item order was non-deterministic | Fixed |
+| C39 | `--raw` on a list emitted one object per line, not a JSON array | Fixed |
 | C38 | Item-based sends unhandled; dead duplicate send models | Fixed |
 | C31 | Every failing command exited 0 | Fixed |
 | C35 | `--raw` emitted a trailing blank line on `get username|password|uri` | Fixed |
@@ -314,69 +315,64 @@ found in a single afternoon of live testing after C12 made errors legible.
 
 ### Open
 
-#### C36. Default output is pretty-printed JSON; the TypeScript CLI is compact
-- **Command:** every command returning structured data, e.g. `bw get item <id>`
+#### C36. Default output was pretty-printed JSON; the TypeScript CLI is compact
+- **Command:** every command returning structured data
 - **Location:** `bw-cli/src/output/formatter.rs`
-- **What happens:** we pretty-print objects by default and print compact under
-  `--raw`. The TypeScript CLI does neither: `base-program.ts`'s `getJson`
-  switches on **`BW_PRETTY` only**, so its default is *compact* and `--raw` has
-  no effect on JSON formatting at all. Its own `--pretty` help says "JSON is
-  tabbed with two spaces", implying the default is not.
-- **What `--raw` actually does in the TypeScript CLI:** exactly two things —
-  return `MessageResponse.raw` instead of the prose (`base-program.ts:87`), and
-  send a payload to stdout instead of a file (`utils.ts:154`). Nothing else.
-- **Why open rather than fixed:** changing the default output format of every
-  object-returning command is a user-visible behaviour change, not a refactor. It
-  was found *during* Phase 2 and deliberately not bundled into it. Worth an
-  explicit decision: full parity argues for compact-by-default.
-- **Status:** **Open.**
+- **What happened:** we pretty-printed by default and used `--raw` as the compact
+  switch. The TypeScript CLI does neither: `getJson` switches on `BW_PRETTY`
+  alone, so compact is the default and `--raw` has no bearing on JSON at all
+  (its two real effects are `MessageResponse.raw` instead of prose, and stdout
+  instead of a file). `bw get item x | wc -l` gave ~25 against upstream's 1.
+- **Fix:** `Object` renders compact unless `--pretty`. `--raw` and `--pretty` are
+  now unrelated flags rather than opposites. **Fixed.**
+- **Why it was open, and what changed:** it alters visible output for every
+  object command, so it needed a decision rather than being bundled into the
+  Phase 2 refactor that found it. Taken deliberately, for parity.
+- **Verified:** default 1 line, `--pretty` 57, `--raw` 1 — and a differential run
+  against the previous build showed the 8 changed commands differ in *formatting
+  only*: identical once parsed with `jq -S`. `--response`, string payloads
+  (C26) and error paths are untouched.
+- **Test gap it exposed:** 285 tests passed before *and* after. `test_pretty_flag`
+  only checked `--response --pretty`, and `document_output_is_still_json` only
+  checked `starts_with("{")` — true of compact and pretty alike. Three tests now
+  pin compact-by-default, `--pretty` indenting, and `--raw` having no effect.
 
-#### C37. `bw export` item order is non-deterministic
-- **Command:** `bw export --format json`
-- **Location:** `bw-core/src/services/vault/mod.rs` — ciphers come from a
-  `HashMap`, whose iteration order is not stable
-- **What happens:** two consecutive exports of an unchanged vault emit items in
-  different orders. Verified: three consecutive runs of the same binary produced
-  two different first-item ids.
-- **Why it matters:** an export cannot be diffed against a previous one or
-  checksummed to detect drift, both ordinary things to do with a backup. It also
-  makes export useless as a comparison artifact between two CLIs.
-- **Fix:** sort by id before serializing.
-- **Found by:** a differential export comparison that reported a difference with
-  *identical byte counts* — which prompted checking the same binary against
-  itself.
-- **Status:** **Open.**
+#### C37. `bw export` item order was non-deterministic
+- **Command:** `bw export --format json|csv`
+- **Location:** `bw-core/src/services/vault/mod.rs` — `encrypted_ciphers`,
+  `encrypted_folders`
+- **What happened:** both collected from a `HashMap` via `into_values()`, whose
+  iteration order is not stable. Three consecutive exports of an unchanged vault
+  produced three different orderings.
+- **Why it mattered:** an export could not be diffed against a previous one or
+  checksummed to detect drift — both ordinary things to do with a backup — and it
+  was useless as a comparison artifact between two CLIs.
+- **Fix:** sort by id, which is unique and immutable, so the order is total and
+  does not shift when an item is renamed. **Fixed.** Verified: five consecutive
+  exports byte-identical, in both JSON and CSV.
+- **Scope, checked rather than assumed:** `list items` and `list folders` are
+  *not* affected — they read the SDK's repository, which is SQLite-ordered and
+  was stable across three runs. Only export went through the `HashMap`.
+- **Found by:** a differential export comparison reporting a difference with
+  *identical byte counts*, which made no sense until the same binary was compared
+  against itself.
 
-#### C38. Item-based sends were unhandled, behind a dead duplicate of the SDK's send models
-- **Command:** `bw send create`, `bw send edit`
-- **Location:** `bw-core/src/models/send/` (deleted), `bw-cli/src/commands/send.rs`
-- **Correction to the original entry.** It claimed our own `SendType` was what
-  stopped the SDK's new `Item` variant from breaking the build. That was wrong
-  in two ways, found by actually tracing the imports:
-  1. Our send models were **dead code**. Nothing outside `models/send/` used
-     them; the live paths (`commands/send.rs`, `send_repository.rs`,
-     `sync_response.rs`, the tests) already used `bitwarden_send` types. The
-     duplicate was not shadowing anything.
-  2. The real reason a new variant broke nothing is that **nothing matches
-     exhaustively** on `SendType` — it is only ever constructed. Adding a
-     variant is source-compatible with construction.
-  The original entry's conclusion — that a duplicated model turns a compile
-  error into a silent gap — is still the right lesson; it just was not the
-  mechanism here.
-- **What was actually broken:** `SendJsonInput` did not parse `type` at all, so a
-  `"type": 2` document fell through to the text path and failed with "A text Send
-  needs text content" — a message describing neither the input nor the reason.
-- **Parity, read from the source:** the TypeScript CLI **does not implement item
-  sends either**. It recognises the type and answers "Item type Send
-  functionality not yet available"
-  (`clients/apps/cli/src/tools/send/commands/create.command.ts:151`). So parity
-  is *recognising and refusing*, not implementing. Had this not been checked, the
-  obvious reading of "the SDK supports it, we don't" would have produced a
-  feature the CLI we are replacing does not have.
-- **Fix:** 291 lines of dead send models and the dead `services/send` module
-  deleted; `type` is now parsed and an item send refused with the TypeScript
-  CLI's message verbatim, so a script matching on it behaves the same. Unknown
-  types above 2 get upstream's "Valid types are: file, text". **Fixed.**
+#### C39. `--raw` on a list emitted one object per line, not a JSON array
+- **Command:** `bw list items --raw` (and any list)
+- **Location:** `bw-cli/src/output/formatter.rs` — the old `print_raw_value`
+- **What happened:** it walked a JSON array and printed each element separately,
+  so twelve items produced twelve lines of compact JSON. The output was **not a
+  valid JSON document**: `bw list items --raw | jq length` failed, and
+  `jq type` reported `"object"` twelve times. The TypeScript CLI prints one
+  compact array.
+- **Same root cause as C36** — treating `--raw` as a formatting mode — but a
+  worse symptom, so recorded separately: C36 produced awkward output, this
+  produced unparseable output.
+- **Fix:** the whole value is rendered as one document. **Fixed.** Verified:
+  1 line, `jq type` reports `array`, `jq length` reports 12.
+- **Found by:** reading `print_raw_value` while fixing C36, then checking what it
+  actually did to a 12-element list rather than a 1-element one — the single
+  folder in the test vault had made the bug invisible.
 
 ### Fixed
 

@@ -310,7 +310,7 @@ does nothing while reporting success.
 | File | What it gives you |
 |---|---|
 | `docs/sdk-3.0-migration.md` | why the migration went the way it did: the SDK-native decision, phases 1–10, the parity matrix, the per-stub SDK-capability survey, and the "do not adopt" list with reasons |
-| `BUGLIST.md` | every defect found, SDK and ours, open and fixed — 3 open, 36 fixed, 11 SDK. Read the header: ids are stable, corrections are noted in place |
+| `BUGLIST.md` | every defect found, SDK and ours, open and fixed — 1 open, 39 fixed, 11 SDK. Read the header: ids are stable, corrections are noted in place |
 | `git log --oneline` | the commit messages carry the reasoning and the live-verification results |
 
 Two themes to absorb before trusting the suite:

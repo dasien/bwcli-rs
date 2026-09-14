@@ -41,16 +41,17 @@ pub fn print_output(output: CommandOutput, args: &GlobalArgs) {
             }
         }
 
-        CommandOutput::Object(value) => {
-            if args.raw {
-                print_raw_value(&value);
-            } else {
-                match serde_json::to_string_pretty(&value) {
-                    Ok(json) => println!("{}", json),
-                    Err(e) => eprintln!("Error formatting response: {}", e),
-                }
-            }
-        }
+        // Compact unless `--pretty`, and **`--raw` has no say in it**. That is
+        // what the TypeScript CLI does: `base-program.ts`'s `getJson` switches on
+        // `BW_PRETTY` alone, and its `--pretty` help — "JSON is tabbed with two
+        // spaces" — says what the default is not. See BUGLIST C36.
+        //
+        // Rendering the whole value as one document also fixes C39: `--raw` used
+        // to walk an array and print each element on its own line, so
+        // `bw list items --raw` emitted twelve JSON objects rather than one JSON
+        // array, and `| jq length` failed on output that was not a document at
+        // all.
+        CommandOutput::Object(value) => print_json(&value, args.pretty),
 
         CommandOutput::Bytes(_) => unreachable!("handled above"),
     }
@@ -122,22 +123,15 @@ pub fn print_error(error: &anyhow::Error, args: &GlobalArgs) {
     eprintln!("{}", message);
 }
 
-fn print_raw_value(value: &Value) {
-    match value {
-        Value::String(s) => println!("{}", s),
-        Value::Number(n) => println!("{}", n),
-        Value::Bool(b) => println!("{}", b),
-        Value::Null => println!("null"),
-        Value::Array(arr) => {
-            for item in arr {
-                print_raw_value(item);
-            }
-        }
-        Value::Object(_) => {
-            // For objects, print compact JSON
-            if let Ok(json) = serde_json::to_string(value) {
-                println!("{}", json);
-            }
-        }
+/// Serialize a value and print it, honouring `--pretty` only.
+fn print_json(value: &Value, pretty: bool) {
+    let rendered = if pretty {
+        serde_json::to_string_pretty(value)
+    } else {
+        serde_json::to_string(value)
+    };
+    match rendered {
+        Ok(json) => println!("{}", json),
+        Err(e) => eprintln!("Error formatting response: {}", e),
     }
 }
